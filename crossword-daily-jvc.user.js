@@ -5,6 +5,12 @@
 // @description  Mots croisés quotidiens sur les forums JVC : une grille par jour, identique pour tout le monde. Chrono, série et partage du résultat, 100 % local.
 // @match        https://www.jeuxvideo.com/forums/*
 // @match        https://jeuxvideo.com/forums/*
+// @author       VOTRE_PSEUDO
+// @license      MIT
+// @homepageURL  https://github.com/VOTRE_PSEUDO_GITHUB/NOM_DU_DEPOT
+// @supportURL   https://github.com/VOTRE_PSEUDO_GITHUB/NOM_DU_DEPOT/issues
+// @downloadURL  https://raw.githubusercontent.com/VOTRE_PSEUDO_GITHUB/NOM_DU_DEPOT/main/crossword-daily-jvc.user.js
+// @updateURL    https://raw.githubusercontent.com/VOTRE_PSEUDO_GITHUB/NOM_DU_DEPOT/main/crossword-daily-jvc.user.js
 // @noframes
 // @grant        GM_addStyle
 // @run-at       document-idle
