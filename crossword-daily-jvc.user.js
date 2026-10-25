@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Crossword Daily JVC
 // @namespace    https://jvscript.fr/
-// @version      0.6.1
+// @version      0.7.0
 // @description  Mots croisés quotidiens sur les forums JVC : une grille par jour, identique pour tout le monde. Chrono, série et partage du résultat, 100 % local.
 // @match        https://www.jeuxvideo.com/forums/*
 // @match        https://jeuxvideo.com/forums/*
@@ -19,7 +19,7 @@
 // ==/UserScript==
 
 /*
- * Crossword Daily JVC — v0.6.1
+ * Crossword Daily JVC — v0.7.0
  *
  * Aucune requête réseau, aucune donnée envoyée : tout reste dans le localStorage
  * du navigateur. La grille du jour est calculée à partir de la date (fuseau
@@ -32,10 +32,10 @@
  */
 (() => {
   'use strict';
-  if (document.getElementById('cdj-launch')) return; // garde anti double injection
+  if (document.getElementById('cdj-panel')) return; // garde anti double injection
 
   /* <pure> — bloc sans accès au DOM, extrait tel quel par les tests Node */
-  const VERSION = '0.6.1';
+  const VERSION = '0.7.0';
   // Alphabet français : majuscules accentuées comprises, en Unicode NFC (é = U+00E9, jamais « e » + accent combinant).
   // Les ligatures œ / æ sont saisies comme deux lettres (OE, AE), comme dans une grille classique.
   const STRICT_RE = /^[A-ZÀÂÄÇÉÈÊËÎÏÔÖÙÛÜŸ]$/;
@@ -355,11 +355,11 @@
 
   // ───────────────────────────── Styles ─────────────────────────────
   const css = `
-#cdj-launch{--cdj-accent:#6559d8;display:inline-flex;align-items:center;gap:6px;box-sizing:border-box;min-height:34px;margin:0 0 0 12px;padding:6px 12px;border:0;border-radius:8px;background:var(--cdj-accent);color:#fff;font:600 13px/1.2 Arial,sans-serif;letter-spacing:0;text-transform:none;text-shadow:none;white-space:nowrap;vertical-align:middle;cursor:pointer;float:none;position:static}
-#cdj-launch:hover{filter:brightness(1.12)}
-#cdj-launch:focus-visible{outline:2px solid #fff;outline-offset:2px;box-shadow:0 0 0 4px var(--cdj-accent)}
+#cdj-launch,#cdj-fab{--cdj-accent:#6559d8;display:inline-flex;align-items:center;gap:6px;box-sizing:border-box;min-height:34px;margin:0 0 0 12px;padding:6px 12px;border:0;border-radius:8px;background:var(--cdj-accent);color:#fff;font:600 13px/1.2 Arial,sans-serif;letter-spacing:0;text-transform:none;text-shadow:none;white-space:nowrap;vertical-align:middle;cursor:pointer;float:none;position:static}
+#cdj-launch:hover,#cdj-fab:hover{filter:brightness(1.12)}
+#cdj-launch:focus-visible,#cdj-fab:focus-visible{outline:2px solid #fff;outline-offset:2px;box-shadow:0 0 0 4px var(--cdj-accent)}
 #cdj-launch.after{display:flex;width:fit-content;margin:6px 0 0}
-#cdj-launch.floating{position:fixed;left:12px;bottom:12px;z-index:2147483645;margin:0;box-shadow:0 4px 14px #0006}
+#cdj-fab{position:fixed;left:12px;bottom:12px;z-index:2147483645;margin:0;box-shadow:0 4px 14px #0006}
 #cdj-panel{--cdj-accent:#6559d8;--cdj-bg:#202127;--cdj-fg:#f5f5f5;--cdj-muted:#c3c3cc;position:fixed;right:16px;top:70px;z-index:2147483646;width:min(570px,calc(100vw - 32px));max-height:calc(100vh - 85px);overflow:auto;padding:16px;background:var(--cdj-bg);color:var(--cdj-fg);border:1px solid #555;border-radius:12px;box-shadow:0 12px 36px #0008;font:14px/1.4 Arial,sans-serif;text-align:left}
 #cdj-panel[hidden],#cdj-panel [hidden]{display:none!important}
 #cdj-panel *{box-sizing:border-box}
@@ -406,6 +406,8 @@
 #cdj-panel .fallback{width:100%;min-height:80px;margin-top:6px;background:#111;color:#fff;border:1px solid #666;border-radius:6px;padding:6px;font:13px monospace}
 #cdj-panel details{margin-top:8px;color:var(--cdj-muted);font-size:13px}
 #cdj-panel summary{cursor:pointer;color:#fff}
+#cdj-panel details.admin{margin-top:10px;padding:6px 10px;border:1px dashed #8a7fe0;border-radius:8px;color:var(--cdj-muted);font-size:13px}
+#cdj-panel details.admin .actions button{background:#7a2f43}
 #cdj-panel .stats{margin:8px 0 0;font-size:12px;color:var(--cdj-muted)}
 #cdj-panel :focus-visible{outline:2px solid #aaa3ff;outline-offset:1px}
 #cdj-panel .cell input:focus-visible{outline:0}
@@ -416,11 +418,18 @@
   // ───────────────────────────── DOM ─────────────────────────────
   const launch = document.createElement('button');
   launch.id = 'cdj-launch';
-  launch.type = 'button';
-  launch.textContent = '🧩 Mots du jour';
-  launch.title = 'Ouvrir le défi de mots croisés du jour';
-  launch.setAttribute('aria-expanded', 'false');
-  launch.setAttribute('aria-controls', 'cdj-panel');
+  // Second bouton, flottant en bas à gauche : toujours accessible, même sur un long topic.
+  // Désactivable : localStorage.setItem('cdj:floating', '0') (il réapparaît seulement si l'autre bouton est introuvable).
+  const fab = document.createElement('button');
+  fab.id = 'cdj-fab';
+  const FAB_PREF = (() => { try { return localStorage.getItem('cdj:floating') !== '0'; } catch { return true; } })();
+  for (const btn of [launch, fab]) {
+    btn.type = 'button';
+    btn.textContent = '🧩 Mots du jour';
+    btn.title = 'Ouvrir le défi de mots croisés du jour';
+    btn.setAttribute('aria-expanded', 'false');
+    btn.setAttribute('aria-controls', 'cdj-panel');
+  }
 
   const panel = document.createElement('section');
   panel.id = 'cdj-panel';
@@ -453,6 +462,19 @@ ${strict ? '<p><strong>Accents obligatoires</strong> : é, è, ê, à, ç… fon
   const $ = (sel) => panel.querySelector(sel);
   const gridEl = $('.grid'), statusEl = $('.status'), timerEl = $('.timer'), penEl = $('.pen');
   const curEl = $('.cur'), resultEl = $('.result'), statsEl = $('.stats'), bannerEl = $('.banner');
+  // Mode testeur : invisible par défaut. Il ne s'active que dans le navigateur où l'on tape, une fois :
+  //   localStorage.setItem('cdj:admin', '1')   puis recharger la page.
+  // Tout est stocké dans CE navigateur : aucune action ne peut affecter un autre joueur.
+  const ADMIN = (() => { try { return localStorage.getItem('cdj:admin') === '1'; } catch { return false; } })();
+  if (ADMIN) {
+    const d = document.createElement('details');
+    d.className = 'admin';
+    d.innerHTML = '<summary>🛠 Mode testeur</summary><p>Ces actions ne concernent que ce navigateur : les autres joueurs ne sont jamais affectés.</p>'
+      + '<div class="actions"><button type="button" data-a="admin-today">Recommencer la grille du jour</button>'
+      + '<button type="button" data-a="admin-stats">Effacer mes stats et séries</button>'
+      + '<button type="button" data-a="admin-off">Quitter le mode testeur</button></div>';
+    statsEl.after(d);
+  }
   const diffNames = ['dimanche', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'];
   const accTxt = strict ? ' · accents obligatoires' : '';
   const mixTxt = legacy ? '' : (([a, m, h]) => ` · ${a} faciles, ${m} intermédiaires, ${h} difficiles`)(mixCounts(entries));
@@ -740,11 +762,43 @@ ${strict ? '<p><strong>Accents obligatoires</strong> : é, è, ê, à, ç… fon
 
   function removeFallback() { panel.querySelectorAll('.fallback').forEach((el) => el.remove()); }
 
+  // Actions du mode testeur : double clic de confirmation (4 s), comme « Effacer mes erreurs ».
+  const adminArmed = new Map();
+  function adminAction(btn, a) {
+    if (!adminArmed.has(btn)) {
+      btn.dataset.label = btn.textContent;
+      btn.textContent = 'Confirmer ?';
+      adminArmed.set(btn, setTimeout(() => { btn.textContent = btn.dataset.label; adminArmed.delete(btn); }, 4000));
+      return;
+    }
+    clearTimeout(adminArmed.get(btn)); adminArmed.delete(btn);
+    btn.textContent = btn.dataset.label;
+    if (a === 'admin-today') {
+      // Grille du jour entièrement remise à zéro : lettres, chrono, indices, vérifications, résultat et entrée de stats du jour.
+      const rev = state.rev + 1; // révision supérieure : les autres onglets de CE navigateur suivent
+      state = sanitize(null); state.rev = rev;
+      delete stats.history[date];
+      writeJSON(KEY_STATS, stats); save();
+      applyStateToUI(); renderStats();
+      if (!panel.hidden) startTimer();
+      choose(order[0]);
+      say('Grille du jour recommencée (chrono, indices et vérifications remis à zéro).');
+    } else if (a === 'admin-stats') {
+      stats = { history: {} };
+      writeJSON(KEY_STATS, stats); renderStats();
+      say('Statistiques et séries effacées (ce navigateur uniquement).');
+    } else {
+      try { localStorage.removeItem('cdj:admin'); } catch { /* ignoré */ }
+      say('Mode testeur désactivé : rechargez la page.');
+    }
+  }
+
   panel.addEventListener('click', async (ev) => {
     const btn = ev.target.closest('[data-a]');
     if (!btn) return;
     const a = btn.dataset.a;
     removeFallback();
+    if (a.startsWith('admin-')) { if (ADMIN) adminAction(btn, a); return; }
     if (a === 'reload') { location.reload(); return; }
     if (a === 'prev' || a === 'next') {
       const k = order.indexOf(selected);
@@ -825,7 +879,7 @@ ${strict ? '<p><strong>Accents obligatoires</strong> : é, è, ê, à, ç… fon
   // ───────────────────────────── Ouverture / fermeture ─────────────────────────────
   function open(v) {
     panel.hidden = !v;
-    launch.setAttribute('aria-expanded', String(v));
+    [launch, fab].forEach((x) => x.setAttribute('aria-expanded', String(v)));
     if (v) {
       checkRollover();
       syncFromStorage();
@@ -835,10 +889,11 @@ ${strict ? '<p><strong>Accents obligatoires</strong> : é, è, ê, à, ç… fon
       startTimer();
     } else {
       stopTimer();
-      launch.focus();
+      (opener && opener.isConnected ? opener : launch.isConnected ? launch : fab).focus();
     }
   }
-  launch.addEventListener('click', () => open(panel.hidden));
+  let opener = null;
+  [launch, fab].forEach((x) => x.addEventListener('click', () => { opener = x; open(panel.hidden); }));
   $('.close').addEventListener('click', () => open(false));
   // Les frappes dans le panneau ne doivent pas déclencher d'éventuels raccourcis d'autres scripts.
   panel.addEventListener('keydown', (ev) => {
@@ -853,39 +908,66 @@ ${strict ? '<p><strong>Accents obligatoires</strong> : é, è, ê, à, ç… fon
   window.addEventListener('storage', (ev) => { if (ev.key === KEY_DAY || ev.key === KEY_STATS) syncFromStorage(); });
 
   // ───────────────────────────── Intégration à la page du forum ─────────────────────────────
-  // Le bouton se place en priorité à la fin du fil d'Ariane (« Accueil / Tous les forums / Forum … »),
-  // présent sur les listes de sujets, les topics et les sous-forums. Si le site le rogne ou le masque à cet
-  // endroit, le script essaie l'emplacement suivant : sous le fil d'Ariane, puis à côté d'un titre « Forum … »,
-  // et en tout dernier recours un bouton flottant.
+  // Deux boutons : un bouton « en ligne » placé dans la page, et un bouton flottant (bas gauche).
+  // Emplacements du bouton en ligne, essayés dans l'ordre (le suivant est utilisé si le site rogne/masque le précédent) :
+  //  1. à droite de la barre d'actions « ← Liste des sujets | ☆ 🔔 RSS ⚙ » (ou « Retour aux forums »),
+  //  2. à la fin du fil d'Ariane (« Accueil / Tous les forums / Forum … / Topic … »),
+  //  3. sous le fil d'Ariane, 4. à côté d'un titre « Forum … ».
   const t0 = Date.now();
+  const inForums = /^\/forums(\/|\.htm)/.test(location.pathname);
   const titleText = (el) => {
     let t = '';
     el.childNodes.forEach((nd) => { if (nd !== launch) t += nd.textContent; });
     return t.replace(/\s+/g, ' ').trim();
   };
   const visibleEl = (el) => el.getClientRects().length > 0 && !el.closest('#cdj-panel');
+  // Premier élément visible dont le texte est exactement l'un des libellés (quelle que soit la balise utilisée).
+  function findByText(re) {
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    for (let nd = walker.nextNode(); nd; nd = walker.nextNode()) {
+      const el = nd.parentElement;
+      if (el && re.test(nd.nodeValue.replace(/\s+/g, ' ').trim()) && visibleEl(el)) return el;
+    }
+    return null;
+  }
   function findTitle() {
     const cands = [...document.querySelectorAll('h1,h2,[role="heading"]')]
       .filter((el) => visibleEl(el) && /^Forum\s+\S/i.test(titleText(el)));
     return cands.find((el) => el.tagName === 'H1') || cands[0] || null;
   }
-  // Fil d'Ariane : plus proche ancêtre du lien « Tous les forums » dont le texte commence par « Accueil ».
+  // Fil d'Ariane : plus proche ancêtre de « Tous les forums » dont le texte commence par « Accueil ».
   function findCrumbRoot() {
-    const link = [...document.querySelectorAll('a')].find((x) => visibleEl(x) && /^Tous les forums$/i.test(x.textContent.trim()));
-    let el = link && link.parentElement;
+    let el = findByText(/^Tous les forums$/i);
+    el = el && el.parentElement;
     for (let d = 0; el && d < 5; d++, el = el.parentElement) {
       if (/^Accueil/i.test(titleText(el)) && el.textContent.length < 600) return el;
     }
     return null;
   }
-  const STRATS = ['crumb', 'crumb-after', 'heading'];
+  // Barre d'actions : plus petit ancêtre du lien « Liste des sujets » / « Retour aux forums » qui contient
+  // aussi la barre d'outils (≥ 3 liens ou boutons) et tient sur une ligne.
+  function findActionRow() {
+    let el = findByText(/^(Retour aux forums|Liste des sujets)$/i);
+    for (let d = 0; el && d < 5 && el !== document.body; d++, el = el.parentElement) {
+      if (el.querySelectorAll('a,button').length >= 3 && el.getBoundingClientRect().height <= 90) return el;
+    }
+    return null;
+  }
+  const STRATS = ['actions', 'crumb', 'crumb-after', 'heading'];
   let strat = 0;
   const place = {
+    actions() {
+      const row = findActionRow();
+      if (!row) return false;
+      launch.classList.remove('after');
+      if (launch.parentElement !== row || row.lastElementChild !== launch) row.appendChild(launch);
+      return true;
+    },
     crumb() {
       const root = findCrumbRoot();
       if (!root) return false;
       const host = [...root.children].filter((c) => c !== launch && c.getClientRects().length > 0).pop() || root;
-      launch.classList.remove('floating', 'after');
+      launch.classList.remove('after');
       if (host === root) { if (launch.parentElement !== root) root.appendChild(launch); }
       else if (host.closest('a')) host.insertAdjacentElement('afterend', launch); // jamais de bouton à l'intérieur d'un lien
       else if (launch.parentElement !== host) host.appendChild(launch);
@@ -894,14 +976,14 @@ ${strict ? '<p><strong>Accents obligatoires</strong> : é, è, ê, à, ç… fon
     'crumb-after'() {
       const root = findCrumbRoot();
       if (!root) return false;
-      launch.classList.remove('floating'); launch.classList.add('after');
+      launch.classList.add('after');
       if (launch.previousElementSibling !== root) root.insertAdjacentElement('afterend', launch);
       return true;
     },
     heading() {
       const t = findTitle();
       if (!t) return false;
-      launch.classList.remove('floating', 'after');
+      launch.classList.remove('after');
       if (launch.parentElement !== t) t.appendChild(launch);
       return true;
     },
@@ -912,11 +994,11 @@ ${strict ? '<p><strong>Accents obligatoires</strong> : é, è, ê, à, ç… fon
     }
     return false;
   }
-  // Le bouton est-il rogné ou masqué par un parent (overflow, display:none…) ?
+  // Le bouton est-il rogné, masqué ou hors de l'écran à cause de son parent ?
   function isClipped() {
-    if (!launch.isConnected || launch.classList.contains('floating')) return false;
+    if (!launch.isConnected) return false;
     const r = launch.getBoundingClientRect();
-    if (r.width < 8 || r.height < 8) return true;
+    if (r.width < 8 || r.height < 8 || r.right > document.documentElement.clientWidth + 1) return true;
     for (let el = launch.parentElement; el && el !== document.body; el = el.parentElement) {
       const cs = getComputedStyle(el);
       if (cs.display === 'none' || cs.visibility === 'hidden') return true;
@@ -932,24 +1014,24 @@ ${strict ? '<p><strong>Accents obligatoires</strong> : é, è, ê, à, ç… fon
       if (!isClipped()) return;
       log('bouton rogné, emplacement suivant');
       launch.remove();
-      if (strat < STRATS.length - 1) { strat++; ensure(); } else floatNow();
+      if (strat < STRATS.length - 1) { strat++; ensure(); } else lastResort();
     }));
   }
-  function floatNow() {
-    if (!/^\/forums(\/|\.htm)/.test(location.pathname)) return;
-    launch.classList.remove('after'); launch.classList.add('floating');
-    document.body.append(launch);
+  // Aucun emplacement utilisable : le bouton flottant prend le relais, même si l'utilisateur l'avait désactivé.
+  function lastResort() {
+    if (!inForums || fab.isConnected) return;
+    document.body.append(fab);
     console.warn('[CDJ] Emplacement dans la page introuvable : bouton flottant utilisé.');
   }
-  // Dernier recours sur toute page du forum (listes, topics, sous-forums) si rien n'est trouvé après 8 s.
-  function floatFallback() {
-    if (launch.isConnected || Date.now() - t0 < 8000) return;
-    floatNow();
-  }
+  let nextTry = 0;
   function ensure() {
     if (!panel.isConnected && document.body) document.body.append(panel);
-    if (launch.isConnected && !launch.classList.contains('floating')) return;
-    if (!attach()) floatFallback();
+    if (!inForums || !document.body) return;
+    if (FAB_PREF && !fab.isConnected) document.body.append(fab);
+    if (launch.isConnected || Date.now() < nextTry) return;
+    if (attach()) return;
+    nextTry = Date.now() + 1500; // évite de rescanner la page à chaque mutation si rien n'est trouvé
+    if (Date.now() - t0 >= 8000) lastResort();
   }
   let rz = 0;
   window.addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(() => { if (isClipped()) verifySoon(); }, 300); });
