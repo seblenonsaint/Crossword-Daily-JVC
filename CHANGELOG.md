@@ -1,10 +1,12 @@
 # Changelog
 
-## 0.4.0 — dictionnaire étendu et fin des répétitions
-- **649 mots** (au lieu de 148), tous niveaux mélangés : animaux, nature, corps, cuisine, maison, métiers, sport, sciences, histoire et mythes, géographie, mots abstraits et **jeux vidéo / internet** (console, boss, avatar, topic, pseudo…).
-- **Anti-répétition** : le dictionnaire est réparti en 4 familles qui tournent chaque jour ; un mot ne peut jamais revenir avant 4 jours (mesuré sur 400 jours : écart médian 20 jours, aucun mot en commun entre deux jours consécutifs).
+## 0.5.0 (regroupe la 0.4.0) — niveaux mélangés, dictionnaire étendu, fin des répétitions
+- **Forces 1 à 6** : chaque mot a une force (1-2 facile, 3-4 intermédiaire, 5-6 difficile à très difficile), affichée sur chaque indice (pastille F1…F6) et dans la barre de définition.
+- **Niveaux mélangés dans chaque grille** : chaque grille contient entre 20 % et 50 % de chacun des trois paliers (en pratique ≈ 45 % faciles, 30 % intermédiaires, 26 % difficiles). **Plus aucune progression selon le jour ou la date** : taille fixe 11 × 11 pour toutes les nouvelles grilles (mesuré sur 400 jours : part de mots difficiles identique du dimanche au samedi, ±1 point).
+- **838 mots** (au lieu de 148) : dont ≈ 130 mots difficiles (expressions rares, littérature, sciences, géographie, philosophie, jargon du jeu vidéo : HITBOX, SHADER, SPEEDRUN, NERF…).
+- **Anti-répétition** : le dictionnaire est réparti en 4 familles qui tournent chaque jour ; un mot ne revient jamais avant 4 jours (mesuré sur 400 jours : écart médian 24 jours, aucun mot en commun entre deux jours consécutifs).
 - Le générateur refuse de placer ensemble deux mots dont l'un figure dans l'indice de l'autre.
-- **Transition en douceur** : les grilles jusqu'au 27/10/2026 restent strictement identiques (test de régression) ; le nouveau dictionnaire s'applique à partir du 28/10/2026 (`NEW_FROM`). Séries et statistiques conservées.
+- **Transition en douceur** : les grilles jusqu'au 27/10/2026 restent strictement identiques (test de régression) ; le nouveau mode s'applique à partir du 28/10/2026 (`NEW_FROM`). Séries et statistiques conservées.
 - Le panneau s'ouvre toujours en haut.
 
 ## 0.3.0 — audit et fiabilisation
