@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.0 — accents significatifs
+- **Les accents font partie de la réponse** (grilles à partir du **31/10/2026**) : ÉTÉ ≠ ETE, PÊCHE ≠ PECHE, FORÊT ≠ FORET. Validation stricte, lettre par lettre.
+- **Base de données** : les 160 mots à accents conservent leur orthographe d'origine (ÉTÉ, FORÊT, HÔPITAL, NAPOLÉON, CLÉOPÂTRE, NOËL, MAÇON…), en Unicode NFC et en majuscules. Chaque entrée garde aussi sa forme sans accent (`key`) pour les anciennes grilles et les contrôles internes.
+- **Saisie** : é è ê à â ç ù û î ô ë ï ü ÿ tapés en minuscules deviennent É È Ê À Â Ç Ù Û Î Ô Ë Ï Ü Ÿ ; touches mortes (^ puis e) gérées sans casser la composition ; formes décomposées (e + accent combinant) converties en NFC ; chiffres et symboles refusés.
+- **Ligature œ / æ** : elles occupent deux cases (O+E, A+E) comme dans une grille classique ; taper « œ » remplit les deux.
+- **Barre d'accents** sous la grille (É È Ê À Â Ç Ù Û Î Ï Ô Ë Ü Œ) pour mobile et claviers sans touches mortes ; elle ne vole pas le focus de la case.
+- Aucune régression : les grilles du 23/10 au 30/10 restent strictement identiques (test de comparaison), navigation, sauvegarde, chrono, score et partage inchangés. Progression du mode accent stockée sous `cdj:v05:<date>`, séries et stats conservées.
+
 ## 0.5.0 (regroupe la 0.4.0) — niveaux mélangés, dictionnaire étendu, fin des répétitions
 - **Forces 1 à 6** : chaque mot a une force (1-2 facile, 3-4 intermédiaire, 5-6 difficile à très difficile), affichée sur chaque indice (pastille F1…F6) et dans la barre de définition.
 - **Niveaux mélangés dans chaque grille** : chaque grille contient entre 20 % et 50 % de chacun des trois paliers (en pratique ≈ 45 % faciles, 30 % intermédiaires, 26 % difficiles). **Plus aucune progression selon le jour ou la date** : taille fixe 11 × 11 pour toutes les nouvelles grilles (mesuré sur 400 jours : part de mots difficiles identique du dimanche au samedi, ±1 point).
