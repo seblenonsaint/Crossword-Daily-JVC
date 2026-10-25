@@ -1,10 +1,12 @@
 // ==UserScript==
 // @name         Crossword Daily JVC
 // @namespace    https://jvscript.fr/
-// @version      0.6.0
+// @version      0.6.1
 // @description  Mots croisés quotidiens sur les forums JVC : une grille par jour, identique pour tout le monde. Chrono, série et partage du résultat, 100 % local.
 // @match        https://www.jeuxvideo.com/forums/*
 // @match        https://jeuxvideo.com/forums/*
+// @match        https://www.jeuxvideo.com/forums.htm
+// @match        https://jeuxvideo.com/forums.htm
 // @author       seblenonsaint
 // @license      MIT
 // @homepageURL  https://github.com/seblenonsaint/Crossword-Daily-JVC
@@ -17,7 +19,7 @@
 // ==/UserScript==
 
 /*
- * Crossword Daily JVC — v0.6.0
+ * Crossword Daily JVC — v0.6.1
  *
  * Aucune requête réseau, aucune donnée envoyée : tout reste dans le localStorage
  * du navigateur. La grille du jour est calculée à partir de la date (fuseau
@@ -33,7 +35,7 @@
   if (document.getElementById('cdj-launch')) return; // garde anti double injection
 
   /* <pure> — bloc sans accès au DOM, extrait tel quel par les tests Node */
-  const VERSION = '0.6.0';
+  const VERSION = '0.6.1';
   // Alphabet français : majuscules accentuées comprises, en Unicode NFC (é = U+00E9, jamais « e » + accent combinant).
   // Les ligatures œ / æ sont saisies comme deux lettres (OE, AE), comme dans une grille classique.
   const STRICT_RE = /^[A-ZÀÂÄÇÉÈÊËÎÏÔÖÙÛÜŸ]$/;
@@ -356,6 +358,7 @@
 #cdj-launch{--cdj-accent:#6559d8;display:inline-flex;align-items:center;gap:6px;box-sizing:border-box;min-height:34px;margin:0 0 0 12px;padding:6px 12px;border:0;border-radius:8px;background:var(--cdj-accent);color:#fff;font:600 13px/1.2 Arial,sans-serif;letter-spacing:0;text-transform:none;text-shadow:none;white-space:nowrap;vertical-align:middle;cursor:pointer;float:none;position:static}
 #cdj-launch:hover{filter:brightness(1.12)}
 #cdj-launch:focus-visible{outline:2px solid #fff;outline-offset:2px;box-shadow:0 0 0 4px var(--cdj-accent)}
+#cdj-launch.after{display:flex;width:fit-content;margin:6px 0 0}
 #cdj-launch.floating{position:fixed;left:12px;bottom:12px;z-index:2147483645;margin:0;box-shadow:0 4px 14px #0006}
 #cdj-panel{--cdj-accent:#6559d8;--cdj-bg:#202127;--cdj-fg:#f5f5f5;--cdj-muted:#c3c3cc;position:fixed;right:16px;top:70px;z-index:2147483646;width:min(570px,calc(100vw - 32px));max-height:calc(100vh - 85px);overflow:auto;padding:16px;background:var(--cdj-bg);color:var(--cdj-fg);border:1px solid #555;border-radius:12px;box-shadow:0 12px 36px #0008;font:14px/1.4 Arial,sans-serif;text-align:left}
 #cdj-panel[hidden],#cdj-panel [hidden]{display:none!important}
@@ -849,38 +852,107 @@ ${strict ? '<p><strong>Accents obligatoires</strong> : é, è, ê, à, ç… fon
   window.addEventListener('pagehide', save);
   window.addEventListener('storage', (ev) => { if (ev.key === KEY_DAY || ev.key === KEY_STATS) syncFromStorage(); });
 
-  // ───────────────────────────── Intégration au titre du forum ─────────────────────────────
+  // ───────────────────────────── Intégration à la page du forum ─────────────────────────────
+  // Le bouton se place en priorité à la fin du fil d'Ariane (« Accueil / Tous les forums / Forum … »),
+  // présent sur les listes de sujets, les topics et les sous-forums. Si le site le rogne ou le masque à cet
+  // endroit, le script essaie l'emplacement suivant : sous le fil d'Ariane, puis à côté d'un titre « Forum … »,
+  // et en tout dernier recours un bouton flottant.
   const t0 = Date.now();
   const titleText = (el) => {
     let t = '';
     el.childNodes.forEach((nd) => { if (nd !== launch) t += nd.textContent; });
     return t.replace(/\s+/g, ' ').trim();
   };
+  const visibleEl = (el) => el.getClientRects().length > 0 && !el.closest('#cdj-panel');
   function findTitle() {
     const cands = [...document.querySelectorAll('h1,h2,[role="heading"]')]
-      .filter((el) => !el.closest('#cdj-panel') && el.getClientRects().length > 0 && /^Forum\s+\S/i.test(titleText(el)));
+      .filter((el) => visibleEl(el) && /^Forum\s+\S/i.test(titleText(el)));
     return cands.find((el) => el.tagName === 'H1') || cands[0] || null;
   }
-  function attach() {
-    const t = findTitle();
-    if (!t) return false;
-    launch.classList.remove('floating');
-    if (launch.parentElement !== t) t.appendChild(launch);
-    log('bouton ancré sur', t);
-    return true;
+  // Fil d'Ariane : plus proche ancêtre du lien « Tous les forums » dont le texte commence par « Accueil ».
+  function findCrumbRoot() {
+    const link = [...document.querySelectorAll('a')].find((x) => visibleEl(x) && /^Tous les forums$/i.test(x.textContent.trim()));
+    let el = link && link.parentElement;
+    for (let d = 0; el && d < 5; d++, el = el.parentElement) {
+      if (/^Accueil/i.test(titleText(el)) && el.textContent.length < 600) return el;
+    }
+    return null;
   }
-  // Dernier recours (uniquement sur une liste de sujets) si le titre n'est pas trouvé : bouton flottant.
-  function floatFallback() {
-    if (launch.isConnected || Date.now() - t0 < 8000 || !/^\/forums\/0-/.test(location.pathname)) return;
-    launch.classList.add('floating');
+  const STRATS = ['crumb', 'crumb-after', 'heading'];
+  let strat = 0;
+  const place = {
+    crumb() {
+      const root = findCrumbRoot();
+      if (!root) return false;
+      const host = [...root.children].filter((c) => c !== launch && c.getClientRects().length > 0).pop() || root;
+      launch.classList.remove('floating', 'after');
+      if (host === root) { if (launch.parentElement !== root) root.appendChild(launch); }
+      else if (host.closest('a')) host.insertAdjacentElement('afterend', launch); // jamais de bouton à l'intérieur d'un lien
+      else if (launch.parentElement !== host) host.appendChild(launch);
+      return true;
+    },
+    'crumb-after'() {
+      const root = findCrumbRoot();
+      if (!root) return false;
+      launch.classList.remove('floating'); launch.classList.add('after');
+      if (launch.previousElementSibling !== root) root.insertAdjacentElement('afterend', launch);
+      return true;
+    },
+    heading() {
+      const t = findTitle();
+      if (!t) return false;
+      launch.classList.remove('floating', 'after');
+      if (launch.parentElement !== t) t.appendChild(launch);
+      return true;
+    },
+  };
+  function attach() {
+    for (let i = strat; i < STRATS.length; i++) {
+      if (place[STRATS[i]]()) { strat = i; log('bouton placé :', STRATS[i], launch.parentElement); verifySoon(); return true; }
+    }
+    return false;
+  }
+  // Le bouton est-il rogné ou masqué par un parent (overflow, display:none…) ?
+  function isClipped() {
+    if (!launch.isConnected || launch.classList.contains('floating')) return false;
+    const r = launch.getBoundingClientRect();
+    if (r.width < 8 || r.height < 8) return true;
+    for (let el = launch.parentElement; el && el !== document.body; el = el.parentElement) {
+      const cs = getComputedStyle(el);
+      if (cs.display === 'none' || cs.visibility === 'hidden') return true;
+      if (/(hidden|clip|auto|scroll)/.test(cs.overflowX + cs.overflowY)) {
+        const a = el.getBoundingClientRect();
+        if (r.right > a.right + 1 || r.left < a.left - 1 || r.bottom > a.bottom + 1 || r.top < a.top - 1) return true;
+      }
+    }
+    return false;
+  }
+  function verifySoon() {
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (!isClipped()) return;
+      log('bouton rogné, emplacement suivant');
+      launch.remove();
+      if (strat < STRATS.length - 1) { strat++; ensure(); } else floatNow();
+    }));
+  }
+  function floatNow() {
+    if (!/^\/forums(\/|\.htm)/.test(location.pathname)) return;
+    launch.classList.remove('after'); launch.classList.add('floating');
     document.body.append(launch);
-    console.warn('[CDJ] Titre du forum introuvable : bouton flottant utilisé.');
+    console.warn('[CDJ] Emplacement dans la page introuvable : bouton flottant utilisé.');
+  }
+  // Dernier recours sur toute page du forum (listes, topics, sous-forums) si rien n'est trouvé après 8 s.
+  function floatFallback() {
+    if (launch.isConnected || Date.now() - t0 < 8000) return;
+    floatNow();
   }
   function ensure() {
     if (!panel.isConnected && document.body) document.body.append(panel);
     if (launch.isConnected && !launch.classList.contains('floating')) return;
     if (!attach()) floatFallback();
   }
+  let rz = 0;
+  window.addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(() => { if (isClipped()) verifySoon(); }, 300); });
   let raf = 0;
   const schedule = () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; ensure(); }); };
   new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true });
