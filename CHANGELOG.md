@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.9.0 — accès administrateur protégé par mot de passe
+- Le mode testeur ne s'ouvre plus avec un simple drapeau `localStorage` : un **cadenas 🔒** discret, sous les statistiques, ouvre un champ **mot de passe**. Le script ne contient pas le mot de passe, seulement son **empreinte PBKDF2-SHA256 salée** (150 000 itérations).
+- Accès valable pour **l'onglet en cours** ; case « Rester connecté sur cet appareil » pour le mémoriser. Blocage de 30 s après 5 mauvais essais. Les jetons invalides sont supprimés. L'ancien drapeau `cdj:admin` (0.7.x) n'ouvre plus rien.
+- Section « 🛠 Mode administrateur » : date de test, recommencer la grille affichée, effacer stats et séries, **verrouiller** (avec confirmation). Aucune action ne peut affecter un autre joueur : tout reste dans le navigateur de l'utilisateur.
+- Limite assumée : un userscript est public ; cette protection masque les outils aux joueurs ordinaires mais n'est pas une sécurité forte.
+
+## 0.8.0 — grilles précédentes et bascule au 26/10/2026
+- **Grilles précédentes (archive)** : flèches ‹ › et liste déroulante pour rejouer tous les jours depuis le défi n°1, avec « ✓ temps » pour les jours terminés. Chaque jour garde sa propre progression, son chrono et ses pénalités. Un bandeau précise que **la grille d'archive ne compte pas dans la série** (la série reste réservée aux grilles terminées le jour même) ; son résultat est enregistré à part.
+- **Bascule au 26/10/2026** de toutes les nouveautés : 838 mots, niveaux mélangés (forces 1 à 6), taille fixe 11 × 11, accents obligatoires. Les défis n°1 à n°3 gardent leurs anciennes règles (accents ignorés).
+- **Date de test** (mode testeur) : jouer la grille d'un autre jour sans rien enregistrer dans les stats, avec bandeau « MODE TEST ».
+
+## 0.7.0 — deux boutons et mode testeur
+- **Deux boutons pour ouvrir le jeu** : un bouton **flottant en bas à gauche**, toujours présent sur les pages du forum (désactivable : `localStorage.setItem('cdj:floating','0')` ; il réapparaît seul si aucun autre emplacement n'est trouvé), et un bouton **en ligne, à droite de la barre « Liste des sujets » / « Retour aux forums »** (à côté des icônes favori, alerte, RSS, réglages). Si cet emplacement n'est pas utilisable, repli automatique sur la fin du fil d'Ariane, sous le fil d'Ariane, puis un titre « Forum … ».
+- Vérification que le bouton en ligne ne déborde pas de l'écran ni d'un conteneur rogné ; recherche de l'emplacement limitée à une fois toutes les 1,5 s si rien n'est trouvé.
+- **Mode testeur (réservé à votre navigateur)**, invisible par défaut. Activation, une fois, dans la console : `localStorage.setItem('cdj:admin','1')` puis recharger. Il ajoute une section « 🛠 Mode testeur » au panneau : recommencer la grille du jour (lettres, chrono, indices, vérifications et résultat remis à zéro), effacer les stats et séries, quitter le mode. Chaque action demande une confirmation. Aucune action ne peut affecter un autre joueur : les données restent dans le navigateur de chacun.
+
+## 0.6.1 — bouton sur toutes les pages du forum
+- **Le bouton apparaît aussi sur les pages topic, les sous-forums et les listes de sujets**, au même endroit : à la fin du fil d'Ariane (« Accueil / Tous les forums / Forum … / Topic … »). Auparavant il n'existait que sur les listes de sujets.
+- **Ancrage en cascade avec vérification** : fin du fil d'Ariane → sous le fil d'Ariane (si le site rogne ou masque le bouton) → à côté d'un titre « Forum … » → bouton flottant (sur toute page du forum, après 8 s). Le bouton n'est jamais placé dans un lien.
+- Ajout de la page `forums.htm` (« Tous les forums ») aux pages couvertes.
+- Détection du fil d'Ariane corrigée pour les listes `<ol>/<li>` dont les séparateurs sont dessinés en CSS.
+
 ## 0.6.0 — accents significatifs
 - **Les accents font partie de la réponse** (grilles à partir du **31/10/2026**) : ÉTÉ ≠ ETE, PÊCHE ≠ PECHE, FORÊT ≠ FORET. Validation stricte, lettre par lettre.
 - **Base de données** : les 160 mots à accents conservent leur orthographe d'origine (ÉTÉ, FORÊT, HÔPITAL, NAPOLÉON, CLÉOPÂTRE, NOËL, MAÇON…), en Unicode NFC et en majuscules. Chaque entrée garde aussi sa forme sans accent (`key`) pour les anciennes grilles et les contrôles internes.
