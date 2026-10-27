@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Crossword Daily JVC
 // @namespace    https://jvscript.fr/
-// @version      0.7.0
+// @version      0.9.0
 // @description  Mots croisés quotidiens sur les forums JVC : une grille par jour, identique pour tout le monde. Chrono, série et partage du résultat, 100 % local.
 // @match        https://www.jeuxvideo.com/forums/*
 // @match        https://jeuxvideo.com/forums/*
@@ -19,7 +19,7 @@
 // ==/UserScript==
 
 /*
- * Crossword Daily JVC — v0.7.0
+ * Crossword Daily JVC — v0.9.0
  *
  * Aucune requête réseau, aucune donnée envoyée : tout reste dans le localStorage
  * du navigateur. La grille du jour est calculée à partir de la date (fuseau
@@ -35,7 +35,7 @@
   if (document.getElementById('cdj-panel')) return; // garde anti double injection
 
   /* <pure> — bloc sans accès au DOM, extrait tel quel par les tests Node */
-  const VERSION = '0.7.0';
+  const VERSION = '0.9.0';
   // Alphabet français : majuscules accentuées comprises, en Unicode NFC (é = U+00E9, jamais « e » + accent combinant).
   // Les ligatures œ / æ sont saisies comme deux lettres (OE, AE), comme dans une grille classique.
   const STRICT_RE = /^[A-ZÀÂÄÇÉÈÊËÎÏÔÖÙÛÜŸ]$/;
@@ -95,9 +95,12 @@
   })();
   const dictionary = dictionaryNew; // alias historique
   // Dès cette date, grilles du dictionnaire étendu. Avant : ancien dictionnaire, grilles inchangées.
-  const NEW_FROM = '2026-10-28';
+  const NEW_FROM = '2026-10-26';
   // Dès cette date : accents significatifs (grille, saisie et validation). Avant : ancien comportement, grilles inchangées.
-  const ACCENT_FROM = '2026-10-31';
+  // (NEW_FROM = ACCENT_FROM : le mode intermédiaire « sans accents » n'est plus utilisé, il reste disponible si les dates diffèrent.)
+  const ACCENT_FROM = '2026-10-26';
+  const KEY_PREFIX = { legacy: 'v03', ascii: 'v04', accent: 'v05' }; // clé de stockage de la progression, par mode de grille
+  const modeOf = (d) => (d < NEW_FROM ? 'legacy' : d < ACCENT_FROM ? 'ascii' : 'accent');
   // Chaque mot appartient à 1 « famille » ; une seule famille sert chaque jour (rotation) :
   // un mot ne peut donc jamais revenir avant BUCKETS jours.
   const BUCKETS = 4;
@@ -134,6 +137,7 @@
 
   const utcDay = (d) => Date.UTC(+d.slice(0, 4), +d.slice(5, 7) - 1, +d.slice(8, 10));
   const prevDay = (d) => new Date(utcDay(d) - 864e5).toISOString().slice(0, 10);
+  const nextDay = (d) => new Date(utcDay(d) + 864e5).toISOString().slice(0, 10);
   const weekday = (d) => new Date(utcDay(d)).getUTCDay();
   const dayNumber = (d) => Math.round((utcDay(d) - utcDay(EPOCH)) / 864e5) + 1;
 
@@ -247,8 +251,8 @@
   }
 
   // Grille du jour : déterministe (même date => même grille pour tout le monde).
-  function buildPuzzle(date) {
-    const mode = date < NEW_FROM ? 'legacy' : date < ACCENT_FROM ? 'ascii' : 'accent';
+  function buildPuzzle(date, forceMode) {
+    const mode = forceMode || modeOf(date);
     const legacy = mode === 'legacy', strict = mode === 'accent';
     const seed = hash((legacy ? 'cdj03:' : strict ? 'cdj05:' : 'cdj04:') + date);
     const n = legacy ? SIZE_BY_WEEKDAY[weekday(date)] : SIZE_NEW;
@@ -285,28 +289,58 @@
   /* </pure> */
 
   // ───────────────────────────── Initialisation ─────────────────────────────
+  // Accès administrateur (mode testeur), protégé par mot de passe. Le script ne contient PAS le mot de passe :
+  // seulement son empreinte PBKDF2-SHA256 salée. Limite à connaître : un userscript est public, cette protection
+  // masque les outils aux joueurs ordinaires mais n'est pas une sécurité forte. Les outils n'agissent de toute
+  // façon que sur le navigateur où ils sont utilisés : aucun autre joueur ne peut être affecté.
+  const ADMIN_SALT = 'cdj-admin-v1-38373092b58157f8a20b576a';
+  const ADMIN_HASH = '9890014bd5f0f941b18b0bc76633ad26ea8848cd9b9a06d646edb27a6ebe6bb0';
+  const ADMIN_ITER = 150000;
+  const adminStored = () => {
+    try { return sessionStorage.getItem('cdj:admin-ok') === ADMIN_HASH || localStorage.getItem('cdj:admin-ok') === ADMIN_HASH; } catch { return false; }
+  };
+  try { localStorage.removeItem('cdj:admin'); } catch { /* ancien drapeau (0.7.x) : n'ouvre plus rien */ }
+  let ADMIN = adminStored();
+  try { // un jeton invalide (modifié à la main, ancienne empreinte…) est supprimé au lieu de rester dans le stockage
+    for (const st of [sessionStorage, localStorage]) { const v = st.getItem('cdj:admin-ok'); if (v !== null && v !== ADMIN_HASH) st.removeItem('cdj:admin-ok'); }
+  } catch { /* ignoré */ }
   const DEBUG = (() => { try { return localStorage.getItem('cdj:debug') === '1'; } catch { return false; } })();
   const log = (...a) => { if (DEBUG) console.log('[CDJ]', ...a); };
 
-  let date = parisDate();
-  let puzzle;
+  // Date de test (mode testeur uniquement) : joue la grille d'un autre jour, sans rien enregistrer dans les stats.
+  const realDate = parisDate();
+  let date = realDate;
+  let testMode = false;
+  if (ADMIN) {
+    try {
+      const td = localStorage.getItem('cdj:testdate');
+      if (/^\d{4}-\d{2}-\d{2}$/.test(td || '') && !Number.isNaN(Date.parse(td))) { date = td; testMode = true; }
+    } catch { /* ignoré */ }
+  }
+  // Tout ce qui dépend du jour affiché (grille, clé de stockage, index des mots) est reconfigurable :
+  // c'est ce qui permet de rejouer les grilles passées sans recharger la page.
+  let b, entries, numbers, n, legacy, strict, mode, dayNum, KEY_DAY, entriesAt, order;
+  const KEY_STATS = 'cdj:v03:stats'; // clé conservée : les séries existantes continuent
+  const entryId = (e) => `${e.d}-${e.num}`;
+  function configureDay(d) {
+    const pz = buildPuzzle(d);
+    if (!pz) return false;
+    ({ b, entries, numbers, n, legacy, strict, mode } = pz);
+    date = d;
+    dayNum = dayNumber(d);
+    KEY_DAY = testMode ? `cdj:test:${d}` : `cdj:${KEY_PREFIX[mode]}:${d}`;
+    entriesAt = Array.from({ length: n * n }, () => []);
+    for (const e of entries) for (const i of e.cells) entriesAt[i].push(e);
+    order = [...entries].sort((x, y) => (x.d === y.d ? x.num - y.num : x.d === 'H' ? -1 : 1));
+    return true;
+  }
   try {
-    puzzle = buildPuzzle(date);
+    if (!configureDay(date)) { console.warn('[CDJ] Génération impossible'); return; }
   } catch (err) {
     console.error('[CDJ] Erreur de génération', err);
     return;
   }
-  if (!puzzle) { console.warn('[CDJ] Génération impossible'); return; }
 
-  const { b, entries, numbers, n, legacy, strict, mode } = puzzle;
-  const dayNum = dayNumber(date);
-  const KEY_DAY = `cdj:${{ legacy: 'v03', ascii: 'v04', accent: 'v05' }[mode]}:${date}`;
-  const KEY_STATS = 'cdj:v03:stats'; // clé conservée : les séries existantes continuent
-
-  const entryId = (e) => `${e.d}-${e.num}`;
-  const entriesAt = Array.from({ length: n * n }, () => []);
-  for (const e of entries) for (const i of e.cells) entriesAt[i].push(e);
-  const order = [...entries].sort((a, c) => (a.d === c.d ? a.num - c.num : a.d === 'H' ? -1 : 1));
   const isLetter = (i) => !!b[Math.floor(i / n)][i % n];
   const solutionAt = (i) => b[Math.floor(i / n)][i % n];
 
@@ -374,7 +408,7 @@
 #cdj-panel .banner{margin:6px 0;padding:8px;border-radius:6px;background:#5b4a14;color:#ffe9a8}
 #cdj-panel .cluebar{display:flex;align-items:stretch;gap:6px;margin:8px 0}
 #cdj-panel .cluebar button{flex:0 0 40px;min-height:40px;background:#33353f;color:#fff;border:0;border-radius:6px;font-size:20px;cursor:pointer}
-#cdj-panel .cluebar .cur{flex:1;margin:0;padding:6px 8px;background:#2b2d36;border-radius:6px;min-height:40px;display:flex;align-items:center}
+#cdj-panel .cluebar .cur{min-width:0;overflow-wrap:anywhere;flex:1;margin:0;padding:6px 8px;background:#2b2d36;border-radius:6px;min-height:40px;display:flex;align-items:center}
 #cdj-panel .gridwrap{overflow-x:auto;margin:8px auto;max-width:430px}
 #cdj-panel .grid{display:grid;gap:2px;margin:0 auto}
 #cdj-panel .cell{position:relative;aspect-ratio:1;min-width:0;background:#fff}
@@ -385,6 +419,12 @@
 #cdj-panel .cell small{position:absolute;top:1px;left:2px;color:#333;font-size:10px;line-height:1;pointer-events:none}
 #cdj-panel .cell input{width:100%;height:100%;min-width:0;border:0;outline:0;background:transparent;color:#171717;text-align:center;padding:8px 0 0;font:700 16px Arial,sans-serif;text-transform:uppercase;caret-color:transparent;border-radius:0}
 #cdj-panel .cell.locked input{color:#12532b}
+#cdj-panel .daynav{display:flex;align-items:center;gap:6px;margin:6px 0}
+#cdj-panel .daynav button{flex:0 0 auto;min-height:36px;padding:0 10px;background:#33353f;color:#fff;border:0;border-radius:6px;font:600 12px Arial,sans-serif;cursor:pointer}
+#cdj-panel .daynav button:disabled{opacity:.4;cursor:default}
+#cdj-panel .daynav select{flex:1;min-width:0;min-height:36px;padding:0 6px;background:#33353f;color:#fff;border:1px solid #555;border-radius:6px;font:13px Arial,sans-serif}
+#cdj-panel .archnote{margin:4px 0;padding:6px 8px;border-radius:6px;background:#2b3a55;color:#cfe1ff;font-size:12px}
+#cdj-panel .archnote button{margin-left:6px;padding:3px 8px;background:#6559d8;color:#fff;border:0;border-radius:5px;cursor:pointer;font:600 12px Arial,sans-serif}
 #cdj-panel .accents{display:flex;flex-wrap:wrap;justify-content:center;gap:5px;margin:2px 0 8px}
 #cdj-panel .accents button{min-width:38px;min-height:38px;padding:0;background:#33353f;color:#fff;border:0;border-radius:6px;font:700 16px Arial,sans-serif;cursor:pointer}
 #cdj-panel .accents button:hover{background:#45406b}
@@ -406,8 +446,17 @@
 #cdj-panel .fallback{width:100%;min-height:80px;margin-top:6px;background:#111;color:#fff;border:1px solid #666;border-radius:6px;padding:6px;font:13px monospace}
 #cdj-panel details{margin-top:8px;color:var(--cdj-muted);font-size:13px}
 #cdj-panel summary{cursor:pointer;color:#fff}
+#cdj-panel .lockrow{margin-top:6px;text-align:right}
+#cdj-panel .lockbtn{background:none;border:0;opacity:.35;cursor:pointer;font-size:14px;padding:4px 8px;color:#fff}
+#cdj-panel .lockbtn:hover,#cdj-panel .lockbtn:focus-visible{opacity:.9}
+#cdj-panel .adminlogin{margin-top:6px;padding:8px 10px;border:1px dashed #8a7fe0;border-radius:8px;font-size:13px;color:var(--cdj-muted)}
+#cdj-panel .adminlogin input[type=password]{display:block;width:100%;margin:4px 0 6px;padding:7px;border-radius:4px;border:1px solid #666;background:#111;color:#fff;font-size:16px}
+#cdj-panel .adminlogin .rem{display:block;margin-bottom:6px}
+#cdj-panel .adminlogin button{min-height:38px;background:var(--cdj-accent);color:#fff;border:0;border-radius:6px;padding:8px 12px;cursor:pointer;font:600 13px Arial,sans-serif}
 #cdj-panel details.admin{margin-top:10px;padding:6px 10px;border:1px dashed #8a7fe0;border-radius:8px;color:var(--cdj-muted);font-size:13px}
 #cdj-panel details.admin .actions button{background:#7a2f43}
+#cdj-panel details.admin button{cursor:pointer}
+#cdj-panel details.admin input[type=date]{padding:4px;border-radius:4px;border:1px solid #666;background:#111;color:#fff}
 #cdj-panel .stats{margin:8px 0 0;font-size:12px;color:var(--cdj-muted)}
 #cdj-panel :focus-visible{outline:2px solid #aaa3ff;outline-offset:1px}
 #cdj-panel .cell input:focus-visible{outline:0}
@@ -439,52 +488,64 @@
   panel.innerHTML = `
 <header class="hd"><h2>🧩 Défi du jour</h2><button type="button" class="close" aria-label="Fermer">×</button></header>
 <p class="meta"></p>
+<div class="daynav" role="group" aria-label="Choisir la grille d’un jour"><button type="button" data-a="day-prev" aria-label="Jour précédent">‹ Jour précédent</button><select class="daysel" aria-label="Toutes les grilles"></select><button type="button" data-a="day-next" aria-label="Jour suivant">Jour suivant ›</button></div>
+<p class="archnote" hidden>Grille d’archive : elle ne compte pas dans votre série ni vos records. <button type="button" data-a="day-today">Revenir à aujourd’hui</button></p>
 <div class="bar"><span class="timer" title="Temps actif (panneau ouvert et onglet visible)">⏱ 00:00</span><span class="pen"></span></div>
 <div class="banner" role="alert" hidden>Un nouveau défi est disponible. <button type="button" data-a="reload">Recharger la page</button></div>
 <div class="cluebar"><button type="button" data-a="prev" aria-label="Définition précédente">‹</button><p class="cur" aria-live="polite"></p><button type="button" data-a="next" aria-label="Définition suivante">›</button></div>
 <div class="gridwrap"><div class="grid" role="group" aria-label="Grille de mots croisés"></div></div>
-${strict ? `<p class="hint">Les accents comptent : ÉTÉ n’est pas ETE. Tapez-les au clavier ou touchez une lettre ci-dessous.</p>
-<div class="accents" role="group" aria-label="Lettres accentuées">${['É', 'È', 'Ê', 'À', 'Â', 'Ç', 'Ù', 'Û', 'Î', 'Ï', 'Ô', 'Ë', 'Ü', 'Œ'].map((c) => `<button type="button" data-ch="${c}" aria-label="Lettre ${c}">${c}</button>`).join('')}</div>` : ''}
+<p class="hint" hidden>Les accents comptent : ÉTÉ n’est pas ETE. Tapez-les au clavier ou touchez une lettre ci-dessous.</p>
+<div class="accents" role="group" aria-label="Lettres accentuées" hidden>${['É', 'È', 'Ê', 'À', 'Â', 'Ç', 'Ù', 'Û', 'Î', 'Ï', 'Ô', 'Ë', 'Ü', 'Œ'].map((c) => `<button type="button" data-ch="${c}" aria-label="Lettre ${c}">${c}</button>`).join('')}</div>
 <div class="clues"><section><h3>Horizontalement</h3><ol class="h"></ol></section><section><h3>Verticalement</h3><ol class="v"></ol></section></div>
 <div class="actions"><button type="button" data-a="check">Vérifier (+${CHECK_PENALTY} s)</button><button type="button" data-a="hint">Indice (+${HINT_PENALTY} s)</button><button type="button" data-a="share">Partager</button><button type="button" data-a="reset">Effacer mes erreurs</button></div>
 <div class="status" role="status" aria-live="polite"></div>
 <div class="result" hidden></div>
 <details><summary>Règles et calcul du score</summary>
-<p>Une seule grille par jour, identique pour tous les joueurs (calculée d'après la date à Paris). Saisissez les lettres au clavier, les accents sont ignorés. Un mot juste se verrouille. Touches : flèches pour se déplacer, Espace ou Entrée pour changer de sens, Échap pour fermer.</p>
-${strict ? '<p><strong>Accents obligatoires</strong> : é, è, ê, à, ç… font partie de la réponse (ÉTÉ ≠ ETE). Majuscules accentuées automatiques. La ligature « œ » occupe deux cases (O et E) : taper œ remplit les deux.</p>' : ''}
+<p>Une seule grille par jour, identique pour tous les joueurs (calculée d'après la date à Paris). Saisissez les lettres au clavier. Un mot juste se verrouille. Touches : flèches pour se déplacer, Espace ou Entrée pour changer de sens, Échap pour fermer.</p>
+<p class="rule-accents" hidden><strong>Accents obligatoires</strong> : é, è, ê, à, ç… font partie de la réponse (ÉTÉ ≠ ETE). Majuscules accentuées automatiques. La ligature « œ » occupe deux cases (O et E) : taper œ remplit les deux.</p>
+<p class="rule-ascii" hidden>Cette ancienne grille (avant le 26/10/2026) ignore les accents : é, è, ê… sont saisis comme E.</p>
 <p><strong>Forces des mots</strong> : chaque mot a une force de 1 à 6 (1-2 facile, 3-4 intermédiaire, 5-6 difficile à très difficile). Chaque grille mélange les trois paliers, dans les mêmes proportions tous les jours : la difficulté ne dépend ni du jour ni de la date.</p>
 <p><strong>Temps final</strong> = temps actif + ${HINT_PENALTY} s par indice + ${CHECK_PENALTY} s par vérification. Plus bas = meilleur. Le chrono ne tourne que si le panneau est ouvert et l'onglet visible.</p>
+<p><strong>Grilles passées</strong> : la barre « Jour précédent » permet de rejouer toutes les grilles depuis le premier défi. Elles se jouent avec les mêmes règles et le même score, mais <strong>ne comptent pas dans votre série ni vos records</strong> (seule la grille du jour compte).</p>
 <p>Votre progression et vos stats sont stockées uniquement dans ce navigateur. Les scores partagés sont déclaratifs : rien ne peut les vérifier sans serveur.</p>
 </details>
-<p class="stats"></p>`;
+<p class="stats"></p>
+<div class="lockrow"><button type="button" class="lockbtn" data-a="admin-open" aria-label="Accès administrateur" title="Accès administrateur">🔒</button></div>
+<div class="adminlogin" hidden><label>Mot de passe administrateur <input type="password" class="apw" autocomplete="off" spellcheck="false"></label>
+<label class="rem"><input type="checkbox" class="aremember"> Rester connecté sur cet appareil</label>
+<button type="button" data-a="admin-unlock">Déverrouiller</button></div>`;
   document.body.append(panel);
 
   const $ = (sel) => panel.querySelector(sel);
   const gridEl = $('.grid'), statusEl = $('.status'), timerEl = $('.timer'), penEl = $('.pen');
   const curEl = $('.cur'), resultEl = $('.result'), statsEl = $('.stats'), bannerEl = $('.banner');
-  // Mode testeur : invisible par défaut. Il ne s'active que dans le navigateur où l'on tape, une fois :
-  //   localStorage.setItem('cdj:admin', '1')   puis recharger la page.
-  // Tout est stocké dans CE navigateur : aucune action ne peut affecter un autre joueur.
-  const ADMIN = (() => { try { return localStorage.getItem('cdj:admin') === '1'; } catch { return false; } })();
-  if (ADMIN) {
+  const lockRow = $('.lockrow'), loginBox = $('.adminlogin');
+  // Section « Mode administrateur » : n'existe dans le DOM qu'après déverrouillage par mot de passe.
+  function buildAdmin() {
     const d = document.createElement('details');
     d.className = 'admin';
-    d.innerHTML = '<summary>🛠 Mode testeur</summary><p>Ces actions ne concernent que ce navigateur : les autres joueurs ne sont jamais affectés.</p>'
-      + '<div class="actions"><button type="button" data-a="admin-today">Recommencer la grille du jour</button>'
+    d.innerHTML = '<summary>🛠 Mode administrateur</summary><p>Ces actions ne concernent que ce navigateur : les autres joueurs ne sont jamais affectés.</p>'
+      + '<p><label>Date de test : <input type="date" class="tdate"></label> '
+      + '<button type="button" data-a="admin-testdate">Jouer cette date</button> <button type="button" data-a="admin-realdate">Revenir à aujourd’hui</button></p>'
+      + '<div class="actions"><button type="button" data-a="admin-today">Recommencer la grille affichée</button>'
       + '<button type="button" data-a="admin-stats">Effacer mes stats et séries</button>'
-      + '<button type="button" data-a="admin-off">Quitter le mode testeur</button></div>';
+      + '<button type="button" data-a="admin-off">Verrouiller le mode admin</button></div>';
     statsEl.after(d);
+    lockRow.hidden = true; loginBox.hidden = true;
   }
+  if (ADMIN) buildAdmin();
   const diffNames = ['dimanche', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'];
-  const accTxt = strict ? ' · accents obligatoires' : '';
-  const mixTxt = legacy ? '' : (([a, m, h]) => ` · ${a} faciles, ${m} intermédiaires, ${h} difficiles`)(mixCounts(entries));
-  $('.meta').textContent = `Défi n°${dayNum > 0 ? dayNum : '–'} · ${diffNames[weekday(date)]} ${date} · grille ${n} × ${n} · ${entries.length} mots${mixTxt}${accTxt}`;
-  gridEl.style.gridTemplateColumns = `repeat(${n},minmax(22px,1fr))`;
+  function renderMode() {
+    const accTxt = strict ? ' · accents obligatoires' : '';
+    const mixTxt = legacy ? '' : (([x, m, h]) => ` · ${x} faciles, ${m} intermédiaires, ${h} difficiles`)(mixCounts(entries));
+    $('.meta').textContent = `Défi n°${dayNum > 0 ? dayNum : '–'} · ${diffNames[weekday(date)]} ${date} · grille ${n} × ${n} · ${entries.length} mots${mixTxt}${accTxt}${testMode ? ' · 🧪 MODE TEST : rien n’est compté dans vos stats' : ''}`;
+    panel.querySelectorAll('.hint,.accents,.rule-accents').forEach((el) => { el.hidden = !strict; });
+    panel.querySelector('.rule-ascii').hidden = strict;
+  }
 
-  const inputs = Array(n * n).fill(null);
-  const boxes = Array(n * n).fill(null);
+  let inputs = [], boxes = [];
   const clueItems = new Map();
-  let selected = order[0];
+  let selected = null;
   let pendingDir = null;
   let pointerWasFocused = false;
   let currentIdx = -1;
@@ -551,100 +612,109 @@ ${strict ? '<p><strong>Accents obligatoires</strong> : é, è, ê, à, ç… fon
 
   const ARROWS = { ArrowRight: [0, 1], ArrowLeft: [0, -1], ArrowDown: [1, 0], ArrowUp: [-1, 0] };
 
-  for (let y = 0; y < n; y++) {
-    for (let x = 0; x < n; x++) {
-      const i = y * n + x;
-      const box = document.createElement('div');
-      box.className = 'cell' + (b[y][x] ? '' : ' block');
-      boxes[i] = box;
-      if (b[y][x]) {
-        if (numbers[y][x]) {
-          const small = document.createElement('small');
-          small.textContent = numbers[y][x];
-          box.append(small);
-        }
-        const input = document.createElement('input');
-        input.type = 'text';
-        input.maxLength = 4; // marge pour remplacer une lettre (ou saisie décomposée e + accent) ; seule la dernière lettre est conservée
-        input.autocomplete = 'off';
-        input.autocapitalize = 'characters';
-        input.spellcheck = false;
-        input.setAttribute('autocorrect', 'off');
-        input.setAttribute('enterkeyhint', 'next');
-        input.setAttribute('aria-label', `Ligne ${y + 1}, colonne ${x + 1}`);
-        input.tabIndex = -1;
-        input.value = state.cells[i] || '';
-        inputs[i] = input;
+  // (Re)construit la grille et les listes de définitions du jour affiché.
+  function buildBoard() {
+    gridEl.textContent = '';
+    $('.h').textContent = ''; $('.v').textContent = '';
+    clueItems.clear();
+    inputs = Array(n * n).fill(null);
+    boxes = Array(n * n).fill(null);
+    gridEl.style.gridTemplateColumns = `repeat(${n},minmax(22px,1fr))`;
+    for (let y = 0; y < n; y++) {
+      for (let x = 0; x < n; x++) {
+        const i = y * n + x;
+        const box = document.createElement('div');
+        box.className = 'cell' + (b[y][x] ? '' : ' block');
+        boxes[i] = box;
+        if (b[y][x]) {
+          if (numbers[y][x]) {
+            const small = document.createElement('small');
+            small.textContent = numbers[y][x];
+            box.append(small);
+          }
+          const input = document.createElement('input');
+          input.type = 'text';
+          input.maxLength = 4; // marge pour remplacer une lettre (ou saisie décomposée e + accent) ; seule la dernière lettre est conservée
+          input.autocomplete = 'off';
+          input.autocapitalize = 'characters';
+          input.spellcheck = false;
+          input.setAttribute('autocorrect', 'off');
+          input.setAttribute('enterkeyhint', 'next');
+          input.setAttribute('aria-label', `Ligne ${y + 1}, colonne ${x + 1}`);
+          input.tabIndex = -1;
+          input.value = state.cells[i] || '';
+          inputs[i] = input;
 
-        input.addEventListener('focus', () => {
-          const list = entriesAt[i];
-          const pref = pendingDir || (list.includes(selected) ? null : selected.d);
-          let target = pref ? list.find((e) => e.d === pref) : null;
-          if (!target) target = list.includes(selected) ? selected : list[0];
-          pendingDir = null;
-          if (target !== selected) choose(target, { focus: false });
-          setCurrent(i);
-        });
-        input.addEventListener('pointerdown', () => { pointerWasFocused = document.activeElement === input; });
-        input.addEventListener('click', () => {
-          if (pointerWasFocused && entriesAt[i].length === 2) toggleDirection(i);
-          pointerWasFocused = false;
-        });
-        input.addEventListener('input', (ev) => {
-          if (input.readOnly) { input.value = state.cells[i]; return; }
-          const all = normalizeInput(input.value, strict);
-          if (!all) {
-            if (ev.isComposing) return; // touche morte en attente (^, ¨…) : ne pas casser la composition
-            input.value = state.cells[i] || ''; // saisie rejetée (chiffre, symbole…)
-            return;
-          }
-          // Ce qui vient d'être tapé : une ligature (œ, æ) donne 2 lettres, sinon la dernière lettre saisie.
-          const typed = ev.data && /^[œŒæÆ]$/.test(ev.data) ? normalizeInput(ev.data, strict) : all.slice(-1);
-          enterLetters(i, typed);
-        });
-        input.addEventListener('keydown', (ev) => {
-          if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
-          const dir = ARROWS[ev.key];
-          if (dir) {
-            const t = stepFrom(i, dir[0], dir[1]);
-            if (t >= 0) { ev.preventDefault(); pendingDir = dir[0] === 0 ? 'H' : 'V'; inputs[t].focus(); }
-            return;
-          }
-          if (ev.key === 'Backspace' || ev.key === 'Delete') {
-            ev.preventDefault();
-            if (!input.readOnly && input.value) { clearCell(i); return; }
-            if (ev.key === 'Backspace') {
-              const prev = selected.cells[selected.cells.indexOf(i) - 1];
-              if (prev !== undefined) inputs[prev].focus();
+          input.addEventListener('focus', () => {
+            const list = entriesAt[i];
+            const pref = pendingDir || (list.includes(selected) ? null : selected.d);
+            let target = pref ? list.find((e) => e.d === pref) : null;
+            if (!target) target = list.includes(selected) ? selected : list[0];
+            pendingDir = null;
+            if (target !== selected) choose(target, { focus: false });
+            setCurrent(i);
+          });
+          input.addEventListener('pointerdown', () => { pointerWasFocused = document.activeElement === input; });
+          input.addEventListener('click', () => {
+            if (pointerWasFocused && entriesAt[i].length === 2) toggleDirection(i);
+            pointerWasFocused = false;
+          });
+          input.addEventListener('input', (ev) => {
+            if (input.readOnly) { input.value = state.cells[i]; return; }
+            const all = normalizeInput(input.value, strict);
+            if (!all) {
+              if (ev.isComposing) return; // touche morte en attente (^, ¨…) : ne pas casser la composition
+              input.value = state.cells[i] || ''; // saisie rejetée (chiffre, symbole…)
+              return;
             }
-            return;
-          }
-          if (ev.key === ' ' || ev.key === 'Enter') { ev.preventDefault(); toggleDirection(i); }
-        });
-        box.append(input);
+            // Ce qui vient d'être tapé : une ligature (œ, æ) donne 2 lettres, sinon la dernière lettre saisie.
+            const typed = ev.data && /^[œŒæÆ]$/.test(ev.data) ? normalizeInput(ev.data, strict) : all.slice(-1);
+            enterLetters(i, typed);
+          });
+          input.addEventListener('keydown', (ev) => {
+            if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+            const dir = ARROWS[ev.key];
+            if (dir) {
+              const t = stepFrom(i, dir[0], dir[1]);
+              if (t >= 0) { ev.preventDefault(); pendingDir = dir[0] === 0 ? 'H' : 'V'; inputs[t].focus(); }
+              return;
+            }
+            if (ev.key === 'Backspace' || ev.key === 'Delete') {
+              ev.preventDefault();
+              if (!input.readOnly && input.value) { clearCell(i); return; }
+              if (ev.key === 'Backspace') {
+                const prev = selected.cells[selected.cells.indexOf(i) - 1];
+                if (prev !== undefined) inputs[prev].focus();
+              }
+              return;
+            }
+            if (ev.key === ' ' || ev.key === 'Enter') { ev.preventDefault(); toggleDirection(i); }
+          });
+          box.append(input);
+        }
+        gridEl.append(box);
       }
-      gridEl.append(box);
     }
-  }
-  const firstInput = inputs.findIndex(Boolean);
-  inputs[firstInput].tabIndex = 0;
+    const firstInput = inputs.findIndex(Boolean);
+    inputs[firstInput].tabIndex = 0;
 
-  for (const e of order) {
-    const li = document.createElement('li');
-    li.value = e.num;
-    li.dataset.id = entryId(e);
-    li.tabIndex = 0;
-    li.setAttribute('role', 'button');
-    li.textContent = `${e.clue} (${e.w.length})`;
-    const badge = document.createElement('span');
-    badge.className = 'f ' + ['', '', '', 'mid', 'mid', 'hard', 'hard'][e.force];
-    badge.textContent = 'F' + e.force;
-    badge.title = `Force ${e.force} : ${FORCE_NAMES[e.force]}`;
-    li.append(badge);
-    li.addEventListener('click', () => choose(e));
-    li.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); choose(e); } });
-    clueItems.set(entryId(e), li);
-    $(e.d === 'H' ? '.h' : '.v').append(li);
+    for (const e of order) {
+      const li = document.createElement('li');
+      li.value = e.num;
+      li.dataset.id = entryId(e);
+      li.tabIndex = 0;
+      li.setAttribute('role', 'button');
+      li.textContent = `${e.clue} (${e.w.length})`;
+      const badge = document.createElement('span');
+      badge.className = 'f ' + ['', '', '', 'mid', 'mid', 'hard', 'hard'][e.force];
+      badge.textContent = 'F' + e.force;
+      badge.title = `Force ${e.force} : ${FORCE_NAMES[e.force]}`;
+      li.append(badge);
+      li.addEventListener('click', () => choose(e));
+      li.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); choose(e); } });
+      clueItems.set(entryId(e), li);
+      $(e.d === 'H' ? '.h' : '.v').append(li);
+    }
   }
 
   // ───────────────────────────── Logique de jeu ─────────────────────────────
@@ -672,14 +742,17 @@ ${strict ? '<p><strong>Accents obligatoires</strong> : é, è, ê, à, ç… fon
 
   function finish() {
     state.finalSeconds = scoreSeconds();
-    stats.history[date] = { sec: state.finalSeconds, hints: state.hints, checks: state.checks, n };
-    const keep = Object.keys(stats.history).sort().slice(-120);
-    stats.history = Object.fromEntries(keep.map((d) => [d, stats.history[d]]));
-    writeJSON(KEY_STATS, stats);
+    if (!testMode && date === realDate) { // ni une grille de test, ni une grille d'archive ne comptent dans les stats / la série
+      stats.history[date] = { sec: state.finalSeconds, hints: state.hints, checks: state.checks, n };
+      const keep = Object.keys(stats.history).sort().slice(-120);
+      stats.history = Object.fromEntries(keep.map((d) => [d, stats.history[d]]));
+      writeJSON(KEY_STATS, stats);
+    }
     touch();
     stopTimer();
     renderResult();
     renderStats();
+    renderDayNav(); // la liste des jours affiche « ✓ + temps » dès la fin de la grille
     statusEl.textContent = 'Bravo ! Tous les mots sont validés.';
   }
 
@@ -697,7 +770,7 @@ ${strict ? '<p><strong>Accents obligatoires</strong> : é, è, ê, à, ç… fon
   }
 
   function renderStats() {
-    const { current, best } = computeStreaks(stats.history, date);
+    const { current, best } = computeStreaks(stats.history, realDate);
     const secs = Object.values(stats.history).map((r) => r.sec);
     statsEl.textContent = secs.length
       ? `Grilles terminées : ${secs.length} · Série : ${current} 🔥 (record ${best}) · Meilleur temps : ${formatTime(Math.min(...secs))}`
@@ -705,11 +778,12 @@ ${strict ? '<p><strong>Accents obligatoires</strong> : é, è, ê, à, ç… fon
   }
 
   function shareText() {
-    const head = `🧩 Crossword Daily JVC #${dayNum > 0 ? dayNum : date} · ${date}`;
+    const head = `${testMode ? '🧪 [TEST] ' : ''}🧩 Crossword Daily JVC #${dayNum > 0 ? dayNum : date} · ${date}${!testMode && date !== realDate ? ' (archive)' : ''}`;
     if (finished()) {
       const net = Math.floor(state.activeMs / 1000);
-      const { current } = computeStreaks(stats.history, date);
-      return `${head}\n${n}×${n} · ⏱ ${formatTime(state.finalSeconds)} (net ${formatTime(net)}, ${state.hints} indice(s), ${state.checks} vérif.)\n🔥 Série : ${current}`;
+      const { current } = computeStreaks(stats.history, realDate);
+      const streak = !testMode && date === realDate ? `\n🔥 Série : ${current}` : '';
+      return `${head}\n${n}×${n} · ⏱ ${formatTime(state.finalSeconds)} (net ${formatTime(net)}, ${state.hints} indice(s), ${state.checks} vérif.)${streak}`;
     }
     return `${head}\n${n}×${n} · en cours : ${solvedSet().size}/${entries.length} mots · ⏱ ${formatTime(scoreSeconds())}`;
   }
@@ -718,7 +792,10 @@ ${strict ? '<p><strong>Accents obligatoires</strong> : é, è, ê, à, ç… fon
     if (!finished()) { resultEl.hidden = true; return; }
     const net = Math.floor(state.activeMs / 1000);
     resultEl.hidden = false;
-    resultEl.textContent = `Terminé en ${formatTime(state.finalSeconds)} : ${formatTime(net)} de jeu + ${state.hints * HINT_PENALTY + state.checks * CHECK_PENALTY} s de pénalités. Revenez demain pour le défi n°${dayNum + 1}.`;
+    const pen = state.hints * HINT_PENALTY + state.checks * CHECK_PENALTY;
+    resultEl.textContent = !testMode && date !== realDate
+      ? `Grille d’archive terminée en ${formatTime(state.finalSeconds)} : ${formatTime(net)} de jeu + ${pen} s de pénalités. Elle ne compte pas dans votre série.`
+      : `Terminé en ${formatTime(state.finalSeconds)} : ${formatTime(net)} de jeu + ${pen} s de pénalités. Revenez demain pour le défi n°${dayNum + 1}.`;
   }
 
   function applyStateToUI() {
@@ -746,7 +823,7 @@ ${strict ? '<p><strong>Accents obligatoires</strong> : é, è, ê, à, ç… fon
   function stopTimer() { if (timerId !== null) { clearInterval(timerId); timerId = null; } tickAt = null; save(); }
 
   function checkRollover() {
-    if (parisDate() !== date) bannerEl.hidden = false;
+    if (!testMode && parisDate() !== realDate) bannerEl.hidden = false;
   }
 
   function syncFromStorage() {
@@ -756,15 +833,104 @@ ${strict ? '<p><strong>Accents obligatoires</strong> : é, è, ê, à, ç… fon
     renderStats();
   }
 
+  // ───────────────────────────── Grilles passées (archive) ─────────────────────────────
+  const dateFr = (d) => `${d.slice(8, 10)}/${d.slice(5, 7)}`;
+  // État d'un jour, lu dans le stockage : « ✓ 05:12 » (terminé), « en cours » ou vide.
+  function dayStatus(d) {
+    const raw = readJSON(`cdj:${KEY_PREFIX[modeOf(d)]}:${d}`);
+    if (!raw || typeof raw !== 'object') return '';
+    if (Number.isFinite(raw.finalSeconds) && raw.finalSeconds >= 0) return `✓ ${formatTime(raw.finalSeconds)}`;
+    return Array.isArray(raw.cells) && raw.cells.some(Boolean) ? 'en cours' : '';
+  }
+  function renderDayNav() {
+    const nav = panel.querySelector('.daynav');
+    nav.hidden = testMode; // le mode test a son propre sélecteur de date
+    panel.querySelector('.archnote').hidden = testMode || date === realDate;
+    if (testMode) return;
+    save(); // le statut du jour affiché doit être à jour
+    const sel = panel.querySelector('.daysel');
+    sel.textContent = '';
+    for (let d = realDate, k = 0; d >= EPOCH && k < 500; d = prevDay(d), k++) {
+      const o = document.createElement('option');
+      const st = dayStatus(d);
+      o.value = d;
+      o.textContent = `n°${dayNumber(d)} · ${dateFr(d)}${d === realDate ? ' (aujourd’hui)' : ''}${st ? ' — ' + st : ''}`;
+      if (d === date) o.selected = true;
+      sel.append(o);
+    }
+    panel.querySelector('[data-a="day-prev"]').disabled = prevDay(date) < EPOCH;
+    panel.querySelector('[data-a="day-next"]').disabled = date >= realDate;
+  }
+  // Affiche la grille d'un autre jour (passé uniquement), avec sa propre progression et son propre chrono.
+  function switchDay(d) {
+    if (testMode || d === date || d < EPOCH || d > realDate) return;
+    const wasOpen = !panel.hidden;
+    stopTimer(); // enregistre la progression du jour quitté
+    removeFallback();
+    if (!configureDay(d)) { say('Grille indisponible pour ce jour.'); return; }
+    state = sanitize(readJSON(KEY_DAY));
+    stats = loadStats();
+    buildBoard();
+    renderMode();
+    selected = order[0]; currentIdx = -1; pendingDir = null;
+    choose(selected, { focus: false });
+    applyStateToUI();
+    renderStats();
+    renderDayNav();
+    panel.scrollTop = 0;
+    if (wasOpen && !finished()) startTimer();
+    say(date === realDate ? 'Retour à la grille du jour.' : `Grille d’archive du ${date} (n°${dayNum}).`);
+  }
+
   // ───────────────────────────── Actions ─────────────────────────────
   let resetArmed = null;
   const say = (msg) => { statusEl.textContent = msg; };
 
   function removeFallback() { panel.querySelectorAll('.fallback').forEach((el) => el.remove()); }
 
-  // Actions du mode testeur : double clic de confirmation (4 s), comme « Effacer mes erreurs ».
+  // Déverrouillage : empreinte PBKDF2-SHA256 du mot de passe saisi comparée à celle du script.
+  async function adminDerive(pw) {
+    const enc = new TextEncoder();
+    const key = await crypto.subtle.importKey('raw', enc.encode(pw), 'PBKDF2', false, ['deriveBits']);
+    const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: enc.encode(ADMIN_SALT), iterations: ADMIN_ITER }, key, 256);
+    return [...new Uint8Array(bits)].map((x) => x.toString(16).padStart(2, '0')).join('');
+  }
+  let adminFails = 0, adminLockUntil = 0;
+  async function adminUnlock() {
+    const now = Date.now();
+    if (now < adminLockUntil) { say(`Trop d’essais : patientez ${Math.ceil((adminLockUntil - now) / 1000)} s.`); return; }
+    const pwEl = panel.querySelector('.apw');
+    const pw = pwEl.value;
+    pwEl.value = '';
+    if (!pw) { say('Saisissez le mot de passe.'); return; }
+    let h = '';
+    try { h = await adminDerive(pw); } catch { say('Chiffrement indisponible dans ce navigateur : accès administrateur impossible.'); return; }
+    if (h !== ADMIN_HASH) {
+      adminFails++;
+      if (adminFails >= 5) { adminFails = 0; adminLockUntil = Date.now() + 30000; say('Mot de passe incorrect. Trop d’essais : patientez 30 s.'); } else say('Mot de passe incorrect.');
+      return;
+    }
+    adminFails = 0;
+    try {
+      sessionStorage.setItem('cdj:admin-ok', ADMIN_HASH); // valable jusqu'à la fermeture de l'onglet
+      if (panel.querySelector('.aremember').checked) localStorage.setItem('cdj:admin-ok', ADMIN_HASH); // sur cet appareil
+    } catch { /* ignoré */ }
+    ADMIN = true;
+    buildAdmin();
+    say('Mode administrateur déverrouillé.');
+  }
+  panel.querySelector('.apw').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); adminUnlock(); } });
+
+  // Actions du mode administrateur : double clic de confirmation (4 s), comme « Effacer mes erreurs ».
   const adminArmed = new Map();
   function adminAction(btn, a) {
+    if (a === 'admin-testdate' || a === 'admin-realdate') { // pas de confirmation : aucune donnée n'est effacée
+      const v = a === 'admin-testdate' ? panel.querySelector('.tdate').value : '';
+      if (a === 'admin-testdate' && !/^\d{4}-\d{2}-\d{2}$/.test(v)) { say('Choisissez d’abord une date de test.'); return; }
+      try { if (v) localStorage.setItem('cdj:testdate', v); else localStorage.removeItem('cdj:testdate'); } catch { /* ignoré */ }
+      location.reload();
+      return;
+    }
     if (!adminArmed.has(btn)) {
       btn.dataset.label = btn.textContent;
       btn.textContent = 'Confirmer ?';
@@ -777,8 +943,8 @@ ${strict ? '<p><strong>Accents obligatoires</strong> : é, è, ê, à, ç… fon
       // Grille du jour entièrement remise à zéro : lettres, chrono, indices, vérifications, résultat et entrée de stats du jour.
       const rev = state.rev + 1; // révision supérieure : les autres onglets de CE navigateur suivent
       state = sanitize(null); state.rev = rev;
-      delete stats.history[date];
-      writeJSON(KEY_STATS, stats); save();
+      if (!testMode) { delete stats.history[date]; writeJSON(KEY_STATS, stats); }
+      save();
       applyStateToUI(); renderStats();
       if (!panel.hidden) startTimer();
       choose(order[0]);
@@ -788,8 +954,13 @@ ${strict ? '<p><strong>Accents obligatoires</strong> : é, è, ê, à, ç… fon
       writeJSON(KEY_STATS, stats); renderStats();
       say('Statistiques et séries effacées (ce navigateur uniquement).');
     } else {
-      try { localStorage.removeItem('cdj:admin'); } catch { /* ignoré */ }
-      say('Mode testeur désactivé : rechargez la page.');
+      // Verrouillage : retire l'accès (session et appareil) et la date de test éventuelle.
+      try { sessionStorage.removeItem('cdj:admin-ok'); localStorage.removeItem('cdj:admin-ok'); } catch { /* ignoré */ }
+      ADMIN = false;
+      panel.querySelectorAll('details.admin').forEach((el) => el.remove());
+      if (testMode) { try { localStorage.removeItem('cdj:testdate'); } catch { /* ignoré */ } location.reload(); return; }
+      lockRow.hidden = false;
+      say('Mode administrateur verrouillé.');
     }
   }
 
@@ -798,7 +969,12 @@ ${strict ? '<p><strong>Accents obligatoires</strong> : é, è, ê, à, ç… fon
     if (!btn) return;
     const a = btn.dataset.a;
     removeFallback();
+    if (a === 'admin-open') { loginBox.hidden = !loginBox.hidden; if (!loginBox.hidden) panel.querySelector('.apw').focus(); return; }
+    if (a === 'admin-unlock') { adminUnlock(); return; }
     if (a.startsWith('admin-')) { if (ADMIN) adminAction(btn, a); return; }
+    if (a === 'day-prev') { switchDay(prevDay(date)); return; }
+    if (a === 'day-next') { switchDay(nextDay(date)); return; }
+    if (a === 'day-today') { switchDay(realDate); return; }
     if (a === 'reload') { location.reload(); return; }
     if (a === 'prev' || a === 'next') {
       const k = order.indexOf(selected);
@@ -866,6 +1042,8 @@ ${strict ? '<p><strong>Accents obligatoires</strong> : é, è, ê, à, ç… fon
     }
   });
 
+  panel.querySelector('.daysel').addEventListener('change', (ev) => switchDay(ev.target.value));
+
   // Barre d'accents (mode strict) : clavier virtuel pour les claviers sans touches mortes ou sur mobile.
   panel.querySelectorAll('.accents button').forEach((btn) => {
     btn.addEventListener('mousedown', (ev) => ev.preventDefault()); // garde le focus dans la case
@@ -883,6 +1061,7 @@ ${strict ? '<p><strong>Accents obligatoires</strong> : é, è, ê, à, ç… fon
     if (v) {
       checkRollover();
       syncFromStorage();
+      renderDayNav();
       if (!storageOk) say('Stockage local indisponible : votre progression ne sera pas sauvegardée.');
       choose(selected);
       panel.scrollTop = 0;
@@ -1041,8 +1220,12 @@ ${strict ? '<p><strong>Accents obligatoires</strong> : é, è, ê, à, ç… fon
   setTimeout(ensure, 8200);
 
   // ───────────────────────────── Démarrage ─────────────────────────────
+  buildBoard();
+  renderMode();
+  selected = order[0];
   choose(selected, { focus: false });
   refreshLocks();
+  renderDayNav();
   renderTimer(); renderPenalties(); renderResult(); renderStats();
   ensure();
   log('prêt', { date, n, mots: entries.length, version: VERSION });
