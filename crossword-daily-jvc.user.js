@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Crossword Daily JVC
 // @namespace    https://jvscript.fr/
-// @version      0.9.0
+// @version      1.0.0
 // @description  Mots croisés quotidiens sur les forums JVC : une grille par jour, identique pour tout le monde. Chrono, série et partage du résultat, 100 % local.
 // @match        https://www.jeuxvideo.com/forums/*
 // @match        https://jeuxvideo.com/forums/*
@@ -19,7 +19,7 @@
 // ==/UserScript==
 
 /*
- * Crossword Daily JVC — v0.9.0
+ * Crossword Daily JVC — v0.10.0
  *
  * Aucune requête réseau, aucune donnée envoyée : tout reste dans le localStorage
  * du navigateur. La grille du jour est calculée à partir de la date (fuseau
@@ -35,7 +35,7 @@
   if (document.getElementById('cdj-panel')) return; // garde anti double injection
 
   /* <pure> — bloc sans accès au DOM, extrait tel quel par les tests Node */
-  const VERSION = '0.9.0';
+  const VERSION = '0.10.0';
   // Alphabet français : majuscules accentuées comprises, en Unicode NFC (é = U+00E9, jamais « e » + accent combinant).
   // Les ligatures œ / æ sont saisies comme deux lettres (OE, AE), comme dans une grille classique.
   const STRICT_RE = /^[A-ZÀÂÄÇÉÈÊËÎÏÔÖÙÛÜŸ]$/;
@@ -289,21 +289,29 @@
   /* </pure> */
 
   // ───────────────────────────── Initialisation ─────────────────────────────
-  // Accès administrateur (mode testeur), protégé par mot de passe. Le script ne contient PAS le mot de passe :
-  // seulement son empreinte PBKDF2-SHA256 salée. Limite à connaître : un userscript est public, cette protection
-  // masque les outils aux joueurs ordinaires mais n'est pas une sécurité forte. Les outils n'agissent de toute
-  // façon que sur le navigateur où ils sont utilisés : aucun autre joueur ne peut être affecté.
-  const ADMIN_SALT = 'cdj-admin-v1-38373092b58157f8a20b576a';
-  const ADMIN_HASH = '9890014bd5f0f941b18b0bc76633ad26ea8848cd9b9a06d646edb27a6ebe6bb0';
-  const ADMIN_ITER = 150000;
-  const adminStored = () => {
-    try { return sessionStorage.getItem('cdj:admin-ok') === ADMIN_HASH || localStorage.getItem('cdj:admin-ok') === ADMIN_HASH; } catch { return false; }
+  // Outils locaux (mode testeur) : AUCUN élément dans l'interface publique tant qu'ils ne sont pas demandés.
+  // Ouverture, depuis la console du navigateur (Ctrl + Maj + J) :
+  //     document.dispatchEvent(new Event('cdj-admin'))
+  // Ces outils n'agissent QUE sur le navigateur où ils sont ouverts (recommencer sa propre grille, jouer une date de
+  // test, effacer ses stats) : ils ne donnent accès à aucune donnée d'un autre joueur et ne sont PAS une
+  // « administration ». Une vraie administration (liste des joueurs, vérification des résultats) exige un serveur
+  // qui vérifie l'identité : voir ARCHITECTURE.md. Le script ne contient volontairement aucun mot de passe,
+  // empreinte ni clé.
+  const TOOLS_TTL = 15 * 60 * 1000; // la session des outils expire après 15 minutes
+  const toolsActive = () => { try { return Number(sessionStorage.getItem('cdj:tools-until')) > Date.now(); } catch { return false; } };
+  const toolsTouch = () => { try { sessionStorage.setItem('cdj:tools-until', String(Date.now() + TOOLS_TTL)); } catch { /* ignoré */ } };
+  const toolsClear = () => { try { sessionStorage.removeItem('cdj:tools-until'); } catch { /* ignoré */ } };
+  // Journal local des opérations sensibles (50 dernières). Modifiable par l'utilisateur : informatif seulement.
+  const audit = (action, extra = '') => {
+    try {
+      const list = JSON.parse(localStorage.getItem('cdj:audit') || '[]');
+      list.push({ t: new Date().toISOString(), a: action, x: extra });
+      localStorage.setItem('cdj:audit', JSON.stringify(list.slice(-50)));
+    } catch { /* ignoré */ }
   };
-  try { localStorage.removeItem('cdj:admin'); } catch { /* ancien drapeau (0.7.x) : n'ouvre plus rien */ }
-  let ADMIN = adminStored();
-  try { // un jeton invalide (modifié à la main, ancienne empreinte…) est supprimé au lieu de rester dans le stockage
-    for (const st of [sessionStorage, localStorage]) { const v = st.getItem('cdj:admin-ok'); if (v !== null && v !== ADMIN_HASH) st.removeItem('cdj:admin-ok'); }
-  } catch { /* ignoré */ }
+  // Nettoyage des anciens mécanismes (0.7.x à 0.9.x) : drapeaux et jetons n'ouvrent plus rien.
+  try { ['cdj:admin', 'cdj:admin-ok'].forEach((k) => { localStorage.removeItem(k); sessionStorage.removeItem(k); }); } catch { /* ignoré */ }
+  let ADMIN = toolsActive();
   const DEBUG = (() => { try { return localStorage.getItem('cdj:debug') === '1'; } catch { return false; } })();
   const log = (...a) => { if (DEBUG) console.log('[CDJ]', ...a); };
 
@@ -446,13 +454,7 @@
 #cdj-panel .fallback{width:100%;min-height:80px;margin-top:6px;background:#111;color:#fff;border:1px solid #666;border-radius:6px;padding:6px;font:13px monospace}
 #cdj-panel details{margin-top:8px;color:var(--cdj-muted);font-size:13px}
 #cdj-panel summary{cursor:pointer;color:#fff}
-#cdj-panel .lockrow{margin-top:6px;text-align:right}
-#cdj-panel .lockbtn{background:none;border:0;opacity:.35;cursor:pointer;font-size:14px;padding:4px 8px;color:#fff}
-#cdj-panel .lockbtn:hover,#cdj-panel .lockbtn:focus-visible{opacity:.9}
-#cdj-panel .adminlogin{margin-top:6px;padding:8px 10px;border:1px dashed #8a7fe0;border-radius:8px;font-size:13px;color:var(--cdj-muted)}
-#cdj-panel .adminlogin input[type=password]{display:block;width:100%;margin:4px 0 6px;padding:7px;border-radius:4px;border:1px solid #666;background:#111;color:#fff;font-size:16px}
-#cdj-panel .adminlogin .rem{display:block;margin-bottom:6px}
-#cdj-panel .adminlogin button{min-height:38px;background:var(--cdj-accent);color:#fff;border:0;border-radius:6px;padding:8px 12px;cursor:pointer;font:600 13px Arial,sans-serif}
+#cdj-panel pre.auditpre{white-space:pre-wrap;margin:4px 0 0;padding:6px;max-height:130px;overflow:auto;background:#111;border-radius:4px;font:11px/1.4 monospace;color:#c9c9d2}
 #cdj-panel details.admin{margin-top:10px;padding:6px 10px;border:1px dashed #8a7fe0;border-radius:8px;color:var(--cdj-muted);font-size:13px}
 #cdj-panel details.admin .actions button{background:#7a2f43}
 #cdj-panel details.admin button{cursor:pointer}
@@ -509,29 +511,33 @@
 <p><strong>Grilles passées</strong> : la barre « Jour précédent » permet de rejouer toutes les grilles depuis le premier défi. Elles se jouent avec les mêmes règles et le même score, mais <strong>ne comptent pas dans votre série ni vos records</strong> (seule la grille du jour compte).</p>
 <p>Votre progression et vos stats sont stockées uniquement dans ce navigateur. Les scores partagés sont déclaratifs : rien ne peut les vérifier sans serveur.</p>
 </details>
-<p class="stats"></p>
-<div class="lockrow"><button type="button" class="lockbtn" data-a="admin-open" aria-label="Accès administrateur" title="Accès administrateur">🔒</button></div>
-<div class="adminlogin" hidden><label>Mot de passe administrateur <input type="password" class="apw" autocomplete="off" spellcheck="false"></label>
-<label class="rem"><input type="checkbox" class="aremember"> Rester connecté sur cet appareil</label>
-<button type="button" data-a="admin-unlock">Déverrouiller</button></div>`;
+<p class="stats"></p>`;
   document.body.append(panel);
 
   const $ = (sel) => panel.querySelector(sel);
   const gridEl = $('.grid'), statusEl = $('.status'), timerEl = $('.timer'), penEl = $('.pen');
   const curEl = $('.cur'), resultEl = $('.result'), statsEl = $('.stats'), bannerEl = $('.banner');
-  const lockRow = $('.lockrow'), loginBox = $('.adminlogin');
-  // Section « Mode administrateur » : n'existe dans le DOM qu'après déverrouillage par mot de passe.
+  // Section « Outils locaux » : n'existe dans le DOM qu'après la commande console (et jusqu'à expiration).
   function buildAdmin() {
     const d = document.createElement('details');
     d.className = 'admin';
-    d.innerHTML = '<summary>🛠 Mode administrateur</summary><p>Ces actions ne concernent que ce navigateur : les autres joueurs ne sont jamais affectés.</p>'
+    d.open = true;
+    d.innerHTML = '<summary>🛠 Outils locaux (testeur)</summary><p>Ces actions ne concernent que ce navigateur : les autres joueurs ne sont jamais affectés. La session expire après 15 min d’inactivité.</p>'
       + '<p><label>Date de test : <input type="date" class="tdate"></label> '
       + '<button type="button" data-a="admin-testdate">Jouer cette date</button> <button type="button" data-a="admin-realdate">Revenir à aujourd’hui</button></p>'
       + '<div class="actions"><button type="button" data-a="admin-today">Recommencer la grille affichée</button>'
       + '<button type="button" data-a="admin-stats">Effacer mes stats et séries</button>'
-      + '<button type="button" data-a="admin-off">Verrouiller le mode admin</button></div>';
+      + '<button type="button" data-a="admin-off">Fermer les outils</button></div>'
+      + '<details class="auditlog"><summary>Journal local des opérations</summary><pre class="auditpre"></pre></details>';
     statsEl.after(d);
-    lockRow.hidden = true; loginBox.hidden = true;
+    refreshAudit();
+  }
+  function refreshAudit() {
+    const pre = panel.querySelector('.auditpre');
+    if (!pre) return;
+    let list = [];
+    try { list = JSON.parse(localStorage.getItem('cdj:audit') || '[]'); } catch { /* ignoré */ }
+    pre.textContent = list.slice(-12).reverse().map((e) => `${String(e.t).replace('T', ' ').slice(0, 19)}  ${e.a}${e.x ? ' · ' + e.x : ''}`).join('\n') || 'Aucune opération.';
   }
   if (ADMIN) buildAdmin();
   const diffNames = ['dimanche', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'];
@@ -888,45 +894,34 @@
 
   function removeFallback() { panel.querySelectorAll('.fallback').forEach((el) => el.remove()); }
 
-  // Déverrouillage : empreinte PBKDF2-SHA256 du mot de passe saisi comparée à celle du script.
-  async function adminDerive(pw) {
-    const enc = new TextEncoder();
-    const key = await crypto.subtle.importKey('raw', enc.encode(pw), 'PBKDF2', false, ['deriveBits']);
-    const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: enc.encode(ADMIN_SALT), iterations: ADMIN_ITER }, key, 256);
-    return [...new Uint8Array(bits)].map((x) => x.toString(16).padStart(2, '0')).join('');
+  // Ouverture des outils sur demande explicite : commande console `document.dispatchEvent(new Event('cdj-admin'))`.
+  // La commande ne fait que DEMANDER l'ouverture ; aucun privilège sur les autres joueurs n'existe dans ce script.
+  function openTools() {
+    toolsTouch();
+    if (!ADMIN) { ADMIN = true; buildAdmin(); audit('outils-ouverts'); refreshAudit(); }
+    open(true);
+    say('Outils locaux ouverts (expiration après 15 min d’inactivité).');
   }
-  let adminFails = 0, adminLockUntil = 0;
-  async function adminUnlock() {
-    const now = Date.now();
-    if (now < adminLockUntil) { say(`Trop d’essais : patientez ${Math.ceil((adminLockUntil - now) / 1000)} s.`); return; }
-    const pwEl = panel.querySelector('.apw');
-    const pw = pwEl.value;
-    pwEl.value = '';
-    if (!pw) { say('Saisissez le mot de passe.'); return; }
-    let h = '';
-    try { h = await adminDerive(pw); } catch { say('Chiffrement indisponible dans ce navigateur : accès administrateur impossible.'); return; }
-    if (h !== ADMIN_HASH) {
-      adminFails++;
-      if (adminFails >= 5) { adminFails = 0; adminLockUntil = Date.now() + 30000; say('Mot de passe incorrect. Trop d’essais : patientez 30 s.'); } else say('Mot de passe incorrect.');
-      return;
-    }
-    adminFails = 0;
-    try {
-      sessionStorage.setItem('cdj:admin-ok', ADMIN_HASH); // valable jusqu'à la fermeture de l'onglet
-      if (panel.querySelector('.aremember').checked) localStorage.setItem('cdj:admin-ok', ADMIN_HASH); // sur cet appareil
-    } catch { /* ignoré */ }
-    ADMIN = true;
-    buildAdmin();
-    say('Mode administrateur déverrouillé.');
+  function closeTools(msg) {
+    audit('outils-fermes', msg ? 'expiration' : 'manuel');
+    toolsClear();
+    ADMIN = false;
+    panel.querySelectorAll('details.admin').forEach((el) => el.remove());
+    if (testMode) { try { localStorage.removeItem('cdj:testdate'); } catch { /* ignoré */ } location.reload(); return; }
+    say(msg || 'Outils locaux fermés.');
   }
-  panel.querySelector('.apw').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); adminUnlock(); } });
+  document.addEventListener('cdj-admin', openTools);
+  setInterval(() => { if (ADMIN && !toolsActive()) closeTools('Session des outils expirée (15 min d’inactivité).'); }, 15000);
 
   // Actions du mode administrateur : double clic de confirmation (4 s), comme « Effacer mes erreurs ».
   const adminArmed = new Map();
   function adminAction(btn, a) {
+    toolsTouch(); // chaque action prolonge la session
+    if (a === 'admin-off') { closeTools(); return; }
     if (a === 'admin-testdate' || a === 'admin-realdate') { // pas de confirmation : aucune donnée n'est effacée
       const v = a === 'admin-testdate' ? panel.querySelector('.tdate').value : '';
       if (a === 'admin-testdate' && !/^\d{4}-\d{2}-\d{2}$/.test(v)) { say('Choisissez d’abord une date de test.'); return; }
+      audit(v ? 'date-de-test' : 'retour-jour-reel', v);
       try { if (v) localStorage.setItem('cdj:testdate', v); else localStorage.removeItem('cdj:testdate'); } catch { /* ignoré */ }
       location.reload();
       return;
@@ -948,20 +943,15 @@
       applyStateToUI(); renderStats();
       if (!panel.hidden) startTimer();
       choose(order[0]);
+      audit('grille-recommencee', date);
       say('Grille du jour recommencée (chrono, indices et vérifications remis à zéro).');
     } else if (a === 'admin-stats') {
       stats = { history: {} };
       writeJSON(KEY_STATS, stats); renderStats();
+      audit('stats-effacees');
       say('Statistiques et séries effacées (ce navigateur uniquement).');
-    } else {
-      // Verrouillage : retire l'accès (session et appareil) et la date de test éventuelle.
-      try { sessionStorage.removeItem('cdj:admin-ok'); localStorage.removeItem('cdj:admin-ok'); } catch { /* ignoré */ }
-      ADMIN = false;
-      panel.querySelectorAll('details.admin').forEach((el) => el.remove());
-      if (testMode) { try { localStorage.removeItem('cdj:testdate'); } catch { /* ignoré */ } location.reload(); return; }
-      lockRow.hidden = false;
-      say('Mode administrateur verrouillé.');
     }
+    refreshAudit();
   }
 
   panel.addEventListener('click', async (ev) => {
@@ -969,8 +959,6 @@
     if (!btn) return;
     const a = btn.dataset.a;
     removeFallback();
-    if (a === 'admin-open') { loginBox.hidden = !loginBox.hidden; if (!loginBox.hidden) panel.querySelector('.apw').focus(); return; }
-    if (a === 'admin-unlock') { adminUnlock(); return; }
     if (a.startsWith('admin-')) { if (ADMIN) adminAction(btn, a); return; }
     if (a === 'day-prev') { switchDay(prevDay(date)); return; }
     if (a === 'day-next') { switchDay(nextDay(date)); return; }
